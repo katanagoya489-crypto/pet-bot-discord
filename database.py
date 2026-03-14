@@ -1,11 +1,15 @@
 
 from __future__ import annotations
+import os
 import sqlite3
 import time
-from typing import Optional, Any
-from config import DATABASE_PATH
+from typing import Any
+from config import DATABASE_PATH, DEFAULT_NOTIFICATION_MODE
 
 def get_conn():
+    folder = os.path.dirname(DATABASE_PATH)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -13,12 +17,12 @@ def get_conn():
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute("""
     CREATE TABLE IF NOT EXISTS pets (
         user_id TEXT PRIMARY KEY,
         guild_id TEXT NOT NULL,
         thread_id TEXT,
+        panel_message_id TEXT,
         character_id TEXT NOT NULL,
         stage TEXT NOT NULL,
         hunger INTEGER NOT NULL DEFAULT 20,
@@ -45,14 +49,18 @@ def init_db():
         night_visit_count INTEGER NOT NULL DEFAULT 0,
         odekake_active INTEGER NOT NULL DEFAULT 0,
         odekake_started_at INTEGER,
+        notification_mode TEXT NOT NULL DEFAULT 'tamagotchi',
         birth_at INTEGER NOT NULL,
         stage_entered_at INTEGER NOT NULL,
         last_access_at INTEGER NOT NULL,
         last_minigame_at INTEGER NOT NULL DEFAULT 0,
+        last_notified_hunger INTEGER NOT NULL DEFAULT 0,
+        last_notified_sleepiness INTEGER NOT NULL DEFAULT 0,
+        last_notified_poop INTEGER NOT NULL DEFAULT 0,
+        last_notified_sick INTEGER NOT NULL DEFAULT 0,
         journeyed INTEGER NOT NULL DEFAULT 0
     )
     """)
-
     cur.execute("""
     CREATE TABLE IF NOT EXISTS collection (
         user_id TEXT NOT NULL,
@@ -61,7 +69,6 @@ def init_db():
         PRIMARY KEY (user_id, character_id)
     )
     """)
-
     cur.execute("""
     CREATE TABLE IF NOT EXISTS evolution_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,12 +78,17 @@ def init_db():
         evolved_at INTEGER NOT NULL
     )
     """)
-
     cur.execute("""
     CREATE TABLE IF NOT EXISTS settings (
         user_id TEXT PRIMARY KEY,
         sleep_start TEXT NOT NULL DEFAULT '00:00',
         sleep_end TEXT NOT NULL DEFAULT '07:00'
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
     )
     """)
     conn.commit()
@@ -88,15 +100,22 @@ def fetch_pet(user_id: int):
     conn.close()
     return row
 
+def fetch_all_active_pets():
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM pets WHERE journeyed = 0").fetchall()
+    conn.close()
+    return rows
+
 def create_pet(user_id: int, guild_id: int, thread_id: int):
     now = int(time.time())
     conn = get_conn()
     conn.execute("""
         INSERT OR REPLACE INTO pets (
             user_id, guild_id, thread_id, character_id, stage, hunger, mood, sleepiness, affection,
-            stress, discipline, poop, is_sick, call_flag, age_seconds, birth_at, stage_entered_at, last_access_at
-        ) VALUES (?, ?, ?, 'egg_yuiran', 'egg', 20, 70, 10, 20, 10, 0, 0, 0, 0, 0, ?, ?, ?)
-    """, (str(user_id), str(guild_id), str(thread_id), now, now, now))
+            stress, discipline, poop, is_sick, call_flag, age_seconds, birth_at, stage_entered_at,
+            last_access_at, notification_mode
+        ) VALUES (?, ?, ?, 'egg_yuiran', 'egg', 20, 70, 10, 20, 10, 0, 0, 0, 0, 0, ?, ?, ?, ?)
+    """, (str(user_id), str(guild_id), str(thread_id), now, now, now, DEFAULT_NOTIFICATION_MODE))
     conn.commit()
     conn.close()
 
@@ -110,10 +129,9 @@ def update_pet(user_id: int, **fields: Any):
     conn.commit()
     conn.close()
 
-def increment_pet(user_id: int, **fields: int):
+def delete_pet(user_id: int):
     conn = get_conn()
-    for key, value in fields.items():
-        conn.execute(f"UPDATE pets SET {key} = {key} + ? WHERE user_id = ?", (value, str(user_id)))
+    conn.execute("DELETE FROM pets WHERE user_id = ?", (str(user_id),))
     conn.commit()
     conn.close()
 
@@ -156,3 +174,19 @@ def fetch_sleep_setting(user_id: int):
     row = conn.execute("SELECT * FROM settings WHERE user_id = ?", (str(user_id),)).fetchone()
     conn.close()
     return row
+
+def get_meta(key: str):
+    conn = get_conn()
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row["value"] if row else None
+
+def set_meta(key: str, value: str):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
+    conn.commit()
+    conn.close()
