@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 import asyncio
 import discord
@@ -52,6 +53,30 @@ async def maybe_send_notification(thread: discord.abc.Messageable, row, text: st
     await thread.send(text)
 
 
+async def upsert_system_log(thread: discord.Thread, user_id: int, text: str):
+    """
+    システムログは常に1つだけ残す。
+    既存の system_message_id があればそのメッセージを編集し、
+    なければ新規作成してIDを保存する。
+    """
+    row = database.fetch_pet(user_id)
+    if not row:
+        return
+
+    system_message_id = row["system_message_id"] if "system_message_id" in row.keys() else None
+
+    if system_message_id:
+        try:
+            msg = await thread.fetch_message(int(system_message_id))
+            await msg.edit(content=text)
+            return
+        except Exception:
+            pass
+
+    msg = await thread.send(text)
+    database.update_pet(user_id, system_message_id=str(msg.id))
+
+
 async def refresh_panel_for_user(user_id: int, prefix: str = "", transient: str | None = None):
     row = database.fetch_pet(user_id)
     if not row or not row["panel_message_id"]:
@@ -76,14 +101,16 @@ async def refresh_panel_for_user(user_id: int, prefix: str = "", transient: str 
     row, evo_msgs = game_logic.update_over_time(user_id, row)
     embed = await build_embed(row, transient=transient)
 
-    content = prefix if prefix else ""
+    content = prefix if prefix else None
+
+    # 通知・進化・旅立ちログは、長く残さず system log 1件に集約
     if evo_msgs:
-        content = (content + "\n\n" if content else "") + "\n".join(evo_msgs)
+        merged = "\n".join(evo_msgs)
+        await upsert_system_log(thread, user_id, merged)
         for m in evo_msgs:
             await maybe_send_notification(thread, row, m)
 
         if row["journeyed"]:
-            # 旅立ち時の手紙表示
             owned = database.fetch_collection(user_id)
             if owned:
                 latest_character_id = owned[-1]["character_id"]
@@ -95,7 +122,7 @@ async def refresh_panel_for_user(user_id: int, prefix: str = "", transient: str 
             if letter_embed:
                 await thread.send(embed=letter_embed)
 
-    await msg.edit(content=content or None, embed=embed, view=PetView(user_id))
+    await msg.edit(content=content, embed=embed, view=PetView(user_id))
 
 
 async def ensure_main_panel():
@@ -184,7 +211,12 @@ class MainPanelView(discord.ui.View):
             embed=embed,
             view=PetView(user.id)
         )
-        database.update_pet(user.id, panel_message_id=str(panel.id), thread_id=str(thread.id))
+        database.update_pet(
+            user.id,
+            panel_message_id=str(panel.id),
+            thread_id=str(thread.id),
+            system_message_id=None,
+        )
         await interaction.response.send_message(f"育成を開始したよ！ {thread.mention}", ephemeral=True)
 
     @discord.ui.button(label="育成の続きから", style=discord.ButtonStyle.blurple, custom_id="main:continue")
@@ -210,7 +242,6 @@ class MainPanelView(discord.ui.View):
             except Exception:
                 thread = None
 
-        # スレッドが消えていたら新しく作る
         if thread is None:
             channel = interaction.channel
             if not isinstance(channel, discord.TextChannel):
@@ -221,7 +252,7 @@ class MainPanelView(discord.ui.View):
                 type=discord.ChannelType.public_thread,
                 auto_archive_duration=60
             )
-            database.update_pet(user.id, thread_id=str(new_thread.id), panel_message_id=None)
+            database.update_pet(user.id, thread_id=str(new_thread.id), panel_message_id=None, system_message_id=None)
             row = database.fetch_pet(user.id)
             embed = await build_embed(row)
             panel = await new_thread.send(
@@ -236,7 +267,6 @@ class MainPanelView(discord.ui.View):
                 ephemeral=True
             )
 
-        # パネルメッセージが消えてたら再作成
         panel_ok = False
         if row["panel_message_id"]:
             try:
@@ -300,6 +330,9 @@ class PetView(discord.ui.View):
         await refresh_panel_for_user(self.owner_id, prefix=result, transient=transient)
 
         thread = interaction.channel
+        if msgs:
+            await upsert_system_log(thread, self.owner_id, "\n".join(msgs))
+
         for m in msgs:
             await maybe_send_notification(thread, row, m)
             if row["journeyed"]:
@@ -355,7 +388,11 @@ class PetView(discord.ui.View):
         _, err = game_logic.start_minigame(self.owner_id, row, "rhythm")
         if err:
             return await interaction.response.send_message(err, ephemeral=True)
-        await interaction.response.send_message("あそぶ音楽ゲームを選んでね。", ephemeral=True, view=MiniGameMenuView(self.owner_id))
+        await interaction.response.send_message(
+            "あそぶ音楽ゲームを選んでね。",
+            ephemeral=True,
+            view=MiniGameMenuView(self.owner_id)
+        )
 
     @discord.ui.button(label="設定", style=discord.ButtonStyle.gray, row=3, custom_id="pet:settings")
     async def settings(self, interaction, button):
@@ -385,6 +422,8 @@ class PetView(discord.ui.View):
         _, msg, evo = game_logic.stop_odekake(self.owner_id, row)
         await interaction.response.defer()
         await refresh_panel_for_user(self.owner_id, prefix=msg)
+        if evo:
+            await upsert_system_log(interaction.channel, self.owner_id, "\n".join(evo))
         for m in evo:
             await maybe_send_notification(interaction.channel, row, m)
 
@@ -505,9 +544,19 @@ class MiniGameChoiceButton(discord.ui.Button):
     async def callback(self, interaction):
         if interaction.user.id != self.owner_id:
             return await interaction.response.send_message("本人だけが遊べるよ。", ephemeral=True)
+
         row = database.fetch_pet(self.owner_id)
         _, msg, evo = game_logic.resolve_minigame(self.owner_id, row, self.game_key, self.idx)
-        await interaction.response.send_message(msg + (("\n" + "\n".join(evo)) if evo else ""), ephemeral=True)
+
+        # 一回押したらそのミニゲーム画面は消す
+        await interaction.response.edit_message(
+            content="このミニゲームは終了したよ。",
+            view=None
+        )
+        await interaction.followup.send(
+            msg + (("\n" + "\n".join(evo)) if evo else ""),
+            ephemeral=True
+        )
         await refresh_panel_for_user(self.owner_id)
 
 
