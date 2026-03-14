@@ -1,10 +1,10 @@
-
 from __future__ import annotations
 import os
 import sqlite3
 import time
 from typing import Any
-from config import DATABASE_PATH, DEFAULT_NOTIFICATION_MODE
+from config import DATABASE_PATH
+
 
 def get_conn():
     folder = os.path.dirname(DATABASE_PATH)
@@ -14,15 +14,18 @@ def get_conn():
     conn.row_factory = sqlite3.Row
     return conn
 
+
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS pets (
         user_id TEXT PRIMARY KEY,
         guild_id TEXT NOT NULL,
         thread_id TEXT,
         panel_message_id TEXT,
+        system_message_id TEXT,
         character_id TEXT NOT NULL,
         stage TEXT NOT NULL,
         hunger INTEGER NOT NULL DEFAULT 20,
@@ -54,13 +57,10 @@ def init_db():
         stage_entered_at INTEGER NOT NULL,
         last_access_at INTEGER NOT NULL,
         last_minigame_at INTEGER NOT NULL DEFAULT 0,
-        last_notified_hunger INTEGER NOT NULL DEFAULT 0,
-        last_notified_sleepiness INTEGER NOT NULL DEFAULT 0,
-        last_notified_poop INTEGER NOT NULL DEFAULT 0,
-        last_notified_sick INTEGER NOT NULL DEFAULT 0,
         journeyed INTEGER NOT NULL DEFAULT 0
     )
     """)
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS collection (
         user_id TEXT NOT NULL,
@@ -69,6 +69,7 @@ def init_db():
         PRIMARY KEY (user_id, character_id)
     )
     """)
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS evolution_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,6 +79,7 @@ def init_db():
         evolved_at INTEGER NOT NULL
     )
     """)
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS settings (
         user_id TEXT PRIMARY KEY,
@@ -85,14 +87,30 @@ def init_db():
         sleep_end TEXT NOT NULL DEFAULT '07:00'
     )
     """)
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     )
     """)
+
     conn.commit()
+
+    # 古いDBからの移行
+    for stmt in [
+        "ALTER TABLE pets ADD COLUMN panel_message_id TEXT",
+        "ALTER TABLE pets ADD COLUMN system_message_id TEXT",
+        "ALTER TABLE pets ADD COLUMN notification_mode TEXT NOT NULL DEFAULT 'tamagotchi'",
+    ]:
+        try:
+            cur.execute(stmt)
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
     conn.close()
+
 
 def fetch_pet(user_id: int):
     conn = get_conn()
@@ -100,24 +118,21 @@ def fetch_pet(user_id: int):
     conn.close()
     return row
 
-def fetch_all_active_pets():
-    conn = get_conn()
-    rows = conn.execute("SELECT * FROM pets WHERE journeyed = 0").fetchall()
-    conn.close()
-    return rows
 
 def create_pet(user_id: int, guild_id: int, thread_id: int):
     now = int(time.time())
     conn = get_conn()
     conn.execute("""
         INSERT OR REPLACE INTO pets (
-            user_id, guild_id, thread_id, character_id, stage, hunger, mood, sleepiness, affection,
-            stress, discipline, poop, is_sick, call_flag, age_seconds, birth_at, stage_entered_at,
-            last_access_at, notification_mode
-        ) VALUES (?, ?, ?, 'egg_yuiran', 'egg', 20, 70, 10, 20, 10, 0, 0, 0, 0, 0, ?, ?, ?, ?)
-    """, (str(user_id), str(guild_id), str(thread_id), now, now, now, DEFAULT_NOTIFICATION_MODE))
+            user_id, guild_id, thread_id, panel_message_id, system_message_id,
+            character_id, stage, hunger, mood, sleepiness, affection,
+            stress, discipline, poop, is_sick, call_flag, age_seconds,
+            birth_at, stage_entered_at, last_access_at, notification_mode
+        ) VALUES (?, ?, ?, NULL, NULL, 'egg_yuiran', 'egg', 20, 70, 10, 20, 10, 0, 0, 0, 0, 0, ?, ?, ?, 'tamagotchi')
+    """, (str(user_id), str(guild_id), str(thread_id), now, now, now))
     conn.commit()
     conn.close()
+
 
 def update_pet(user_id: int, **fields: Any):
     if not fields:
@@ -129,35 +144,43 @@ def update_pet(user_id: int, **fields: Any):
     conn.commit()
     conn.close()
 
+
 def delete_pet(user_id: int):
     conn = get_conn()
     conn.execute("DELETE FROM pets WHERE user_id = ?", (str(user_id),))
     conn.commit()
     conn.close()
 
+
 def save_collection(user_id: int, character_id: str):
     conn = get_conn()
     conn.execute(
         "INSERT OR IGNORE INTO collection (user_id, character_id, obtained_at) VALUES (?, ?, ?)",
-        (str(user_id), character_id, int(time.time())),
+        (str(user_id), character_id, int(time.time()))
     )
     conn.commit()
     conn.close()
 
+
 def fetch_collection(user_id: int):
     conn = get_conn()
-    rows = conn.execute("SELECT * FROM collection WHERE user_id = ? ORDER BY obtained_at ASC", (str(user_id),)).fetchall()
+    rows = conn.execute(
+        "SELECT * FROM collection WHERE user_id = ? ORDER BY obtained_at ASC",
+        (str(user_id),)
+    ).fetchall()
     conn.close()
     return rows
+
 
 def add_evolution_log(user_id: int, from_character_id: str, to_character_id: str):
     conn = get_conn()
     conn.execute(
         "INSERT INTO evolution_log (user_id, from_character_id, to_character_id, evolved_at) VALUES (?, ?, ?, ?)",
-        (str(user_id), from_character_id, to_character_id, int(time.time())),
+        (str(user_id), from_character_id, to_character_id, int(time.time()))
     )
     conn.commit()
     conn.close()
+
 
 def set_sleep_setting(user_id: int, start: str, end: str):
     conn = get_conn()
@@ -169,11 +192,13 @@ def set_sleep_setting(user_id: int, start: str, end: str):
     conn.commit()
     conn.close()
 
+
 def fetch_sleep_setting(user_id: int):
     conn = get_conn()
     row = conn.execute("SELECT * FROM settings WHERE user_id = ?", (str(user_id),)).fetchone()
     conn.close()
     return row
+
 
 def get_meta(key: str):
     conn = get_conn()
@@ -181,11 +206,11 @@ def get_meta(key: str):
     conn.close()
     return row["value"] if row else None
 
+
 def set_meta(key: str, value: str):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (key, value),
     )
     conn.commit()
