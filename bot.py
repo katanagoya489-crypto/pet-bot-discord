@@ -17,6 +17,8 @@ intents.messages = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+WELCOME_MARKER = "○○っちへようこそ！"
+
 
 def is_owner(interaction: discord.Interaction, owner_id: int) -> bool:
     return interaction.user.id == owner_id
@@ -69,6 +71,57 @@ async def upsert_system_log(thread: discord.Thread, user_id: int, text: str):
 
     msg = await thread.send(text)
     database.update_pet(user_id, system_message_id=str(msg.id))
+
+
+async def cleanup_old_main_panels(channel: discord.TextChannel, keep_message_id: int | None = None):
+    """
+    入口パネルは常に1件だけにする。
+    BOT自身の welcome パネルを見つけたら、keep_message_id 以外は削除。
+    """
+    try:
+        async for m in channel.history(limit=50):
+            if m.author.id != bot.user.id:
+                continue
+            if not m.content:
+                continue
+            if WELCOME_MARKER not in m.content:
+                continue
+            if keep_message_id and m.id == keep_message_id:
+                continue
+            try:
+                await m.delete()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+async def delete_recent_thread_created_log(parent_channel: discord.TextChannel, thread_id: int):
+    """
+    親チャンネルに残るスレッド開始ログを、見つかった場合だけ消す。
+    Discord側の仕様で消せないこともあるので best effort。
+    """
+    await asyncio.sleep(1.2)
+    try:
+        async for m in parent_channel.history(limit=10):
+            if m.type == discord.MessageType.thread_created:
+                # thread_created の対象スレッドを直接取れない環境もあるため、近傍ログを削除対象にする
+                try:
+                    await m.delete()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+async def create_clean_thread(parent_channel: discord.TextChannel, thread_name: str) -> discord.Thread:
+    thread = await parent_channel.create_thread(
+        name=thread_name,
+        type=discord.ChannelType.public_thread,
+        auto_archive_duration=60
+    )
+    bot.loop.create_task(delete_recent_thread_created_log(parent_channel, thread.id))
+    return thread
 
 
 async def refresh_panel_for_user(user_id: int, prefix: str = "", transient: str | None = None):
@@ -139,18 +192,20 @@ async def ensure_main_panel():
         try:
             msg = await channel.fetch_message(int(panel_id))
             await msg.edit(
-                content="**○○っちへようこそ！**\n育成開始を押して遊んでね。",
+                content=f"**{WELCOME_MARKER}**\n育成開始を押して遊んでね。",
                 view=MainPanelView()
             )
+            await cleanup_old_main_panels(channel, keep_message_id=msg.id)
             return
         except Exception:
             pass
 
     msg = await channel.send(
-        "**○○っちへようこそ！**\n育成開始を押して遊んでね。",
+        f"**{WELCOME_MARKER}**\n育成開始を押して遊んでね。",
         view=MainPanelView()
     )
     database.set_meta("main_panel_message_id", str(msg.id))
+    await cleanup_old_main_panels(channel, keep_message_id=msg.id)
 
 
 async def auto_tick_loop():
@@ -191,27 +246,25 @@ class MainPanelView(discord.ui.View):
         if not isinstance(channel, discord.TextChannel):
             return await interaction.response.send_message("テキストチャンネルで使ってね。", ephemeral=True)
 
-        thread = await channel.create_thread(
-            name=f"{user.display_name}っち",
-            type=discord.ChannelType.public_thread,
-            auto_archive_duration=60
-        )
-
-        row, _ = game_logic.start_pet_if_needed(user.id, guild.id, thread.id)
-        embed = await build_embed(row)
-        panel = await thread.send(
-            f"{user.mention} の育成スレッドができたよ！\n"
-            "通知は最初は『たまごっち』設定です。忙しい時は設定で変えてね。",
-            embed=embed,
-            view=PetView(user.id)
-        )
-        database.update_pet(
-            user.id,
-            panel_message_id=str(panel.id),
-            thread_id=str(thread.id),
-            system_message_id=None,
-        )
-        await interaction.response.send_message(f"育成を開始したよ！ {thread.mention}", ephemeral=True)
+        try:
+            thread = await create_clean_thread(channel, f"{user.display_name}っち")
+            row, _ = game_logic.start_pet_if_needed(user.id, guild.id, thread.id)
+            embed = await build_embed(row)
+            panel = await thread.send(
+                f"{user.mention} の育成スレッドができたよ！\n通知は最初は『たまごっち』設定です。忙しい時は設定で変えてね。",
+                embed=embed,
+                view=PetView(user.id)
+            )
+            database.update_pet(
+                user.id,
+                panel_message_id=str(panel.id),
+                thread_id=str(thread.id),
+                system_message_id=None,
+            )
+            await interaction.response.send_message(f"育成を開始したよ！ {thread.mention}", ephemeral=True)
+        except Exception as e:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"育成開始に失敗したよ。管理者に伝えてね。\n`{type(e).__name__}`", ephemeral=True)
 
     @discord.ui.button(label="育成の続きから", style=discord.ButtonStyle.blurple, custom_id="main:continue")
     async def continue_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -236,52 +289,51 @@ class MainPanelView(discord.ui.View):
             except Exception:
                 thread = None
 
-        if thread is None:
-            channel = interaction.channel
-            if not isinstance(channel, discord.TextChannel):
-                return await interaction.response.send_message("テキストチャンネルで使ってね。", ephemeral=True)
+        try:
+            if thread is None:
+                channel = interaction.channel
+                if not isinstance(channel, discord.TextChannel):
+                    return await interaction.response.send_message("テキストチャンネルで使ってね。", ephemeral=True)
 
-            new_thread = await channel.create_thread(
-                name=f"{user.display_name}っち-つづき",
-                type=discord.ChannelType.public_thread,
-                auto_archive_duration=60
-            )
-            database.update_pet(user.id, thread_id=str(new_thread.id), panel_message_id=None, system_message_id=None)
-            row = database.fetch_pet(user.id)
-            embed = await build_embed(row)
-            panel = await new_thread.send(
-                f"{user.mention} の育成データを続きから復帰したよ！\n"
-                "前のスレッドが見つからなかったため、新しいスレッドを作成しました。",
-                embed=embed,
-                view=PetView(user.id)
-            )
-            database.update_pet(user.id, panel_message_id=str(panel.id))
-            return await interaction.response.send_message(
-                f"育成データを復帰したよ！ {new_thread.mention}",
+                new_thread = await create_clean_thread(channel, f"{user.display_name}っち-つづき")
+                database.update_pet(user.id, thread_id=str(new_thread.id), panel_message_id=None, system_message_id=None)
+                row = database.fetch_pet(user.id)
+                embed = await build_embed(row)
+                panel = await new_thread.send(
+                    f"{user.mention} の育成データを続きから復帰したよ！\n前のスレッドが見つからなかったため、新しいスレッドを作成しました。",
+                    embed=embed,
+                    view=PetView(user.id)
+                )
+                database.update_pet(user.id, panel_message_id=str(panel.id))
+                return await interaction.response.send_message(
+                    f"育成データを復帰したよ！ {new_thread.mention}",
+                    ephemeral=True
+                )
+
+            panel_ok = False
+            if row["panel_message_id"]:
+                try:
+                    await thread.fetch_message(int(row["panel_message_id"]))
+                    panel_ok = True
+                except Exception:
+                    panel_ok = False
+
+            if not panel_ok:
+                embed = await build_embed(row)
+                panel = await thread.send(
+                    f"{user.mention} の育成パネルを再作成したよ！",
+                    embed=embed,
+                    view=PetView(user.id)
+                )
+                database.update_pet(user.id, panel_message_id=str(panel.id))
+
+            await interaction.response.send_message(
+                f"続きから再開できるよ！ {thread.mention}",
                 ephemeral=True
             )
-
-        panel_ok = False
-        if row["panel_message_id"]:
-            try:
-                await thread.fetch_message(int(row["panel_message_id"]))
-                panel_ok = True
-            except Exception:
-                panel_ok = False
-
-        if not panel_ok:
-            embed = await build_embed(row)
-            panel = await thread.send(
-                f"{user.mention} の育成パネルを再作成したよ！",
-                embed=embed,
-                view=PetView(user.id)
-            )
-            database.update_pet(user.id, panel_message_id=str(panel.id))
-
-        await interaction.response.send_message(
-            f"続きから再開できるよ！ {thread.mention}",
-            ephemeral=True
-        )
+        except Exception as e:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"続きからの復帰に失敗したよ。管理者に伝えてね。\n`{type(e).__name__}`", ephemeral=True)
 
     @discord.ui.button(label="図鑑", style=discord.ButtonStyle.gray, custom_id="main:dex")
     async def dex(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -618,11 +670,14 @@ async def on_ready():
 async def setup_panel(ctx):
     if ADMIN_USER_IDS and ctx.author.id not in ADMIN_USER_IDS:
         return await ctx.send("管理者だけが使えるよ。")
-    msg = await ctx.send(
-        "**○○っちへようこそ！**\n育成開始を押して遊んでね。",
-        view=MainPanelView()
-    )
-    database.set_meta("main_panel_message_id", str(msg.id))
+    channel = ctx.channel
+    if isinstance(channel, discord.TextChannel):
+        msg = await channel.send(
+            f"**{WELCOME_MARKER}**\n育成開始を押して遊んでね。",
+            view=MainPanelView()
+        )
+        database.set_meta("main_panel_message_id", str(msg.id))
+        await cleanup_old_main_panels(channel, keep_message_id=msg.id)
 
 
 @bot.command()
