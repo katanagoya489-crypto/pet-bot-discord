@@ -1,7 +1,5 @@
-
 from __future__ import annotations
 import asyncio
-from typing import Optional
 import discord
 from discord.ext import commands
 
@@ -9,7 +7,7 @@ import database
 import game_logic
 import image_service
 from game_data import CHARACTERS, DEX_TARGETS, MUSIC_GAMES
-from config import DISCORD_BOT_TOKEN, ADMIN_USER_IDS, ENTRY_CHANNEL_ID, AUTO_TICK_SECONDS, THREAD_AUTO_ARCHIVE_MINUTES
+from config import DISCORD_BOT_TOKEN, ADMIN_USER_IDS, ENTRY_CHANNEL_ID
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -19,10 +17,12 @@ intents.messages = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+
 def is_owner(interaction: discord.Interaction, owner_id: int) -> bool:
     return interaction.user.id == owner_id
 
-async def build_pet_embed(row, transient: str | None = None) -> discord.Embed:
+
+async def build_embed(row, transient: str | None = None):
     embed = discord.Embed(description=game_logic.status_lines(row))
     key = game_logic.image_key_for_pet(row, transient=transient)
     url = await image_service.get_image_url(bot, key)
@@ -30,7 +30,8 @@ async def build_pet_embed(row, transient: str | None = None) -> discord.Embed:
         embed.set_image(url=url)
     return embed
 
-async def build_letter_embed(character_name: str) -> Optional[discord.Embed]:
+
+async def build_letter_embed(character_name: str):
     key = f"{character_name}_手紙"
     url = await image_service.get_image_url(bot, key)
     if not url:
@@ -39,39 +40,68 @@ async def build_letter_embed(character_name: str) -> Optional[discord.Embed]:
     embed.set_image(url=url)
     return embed
 
+
 async def maybe_send_notification(thread: discord.abc.Messageable, row, text: str):
     mode = row["notification_mode"]
     if mode == "mute":
         return
-    if mode == "quiet" and not any(k in text for k in ["進化", "旅", "病気", "孵化"]):
+    if mode == "quiet" and not any(k in text for k in ["進化", "孵化", "旅", "病気"]):
         return
     if mode == "normal" and any(k in text for k in ["おなか", "ねむ", "うんち"]):
         return
     await thread.send(text)
 
-async def render_panel(user_id: int, prefix: str = "", transient: str | None = None):
+
+async def refresh_panel_for_user(user_id: int, prefix: str = "", transient: str | None = None):
     row = database.fetch_pet(user_id)
-    if not row or not row["thread_id"] or not row["panel_message_id"]:
+    if not row or not row["panel_message_id"]:
         return
+
+    thread = None
+    if row["thread_id"]:
+        thread = bot.get_channel(int(row["thread_id"]))
+        if thread is None:
+            try:
+                thread = await bot.fetch_channel(int(row["thread_id"]))
+            except Exception:
+                return
+    if thread is None:
+        return
+
     try:
-        thread = bot.get_channel(int(row["thread_id"])) or await bot.fetch_channel(int(row["thread_id"]))
         msg = await thread.fetch_message(int(row["panel_message_id"]))
     except Exception:
         return
+
     row, evo_msgs = game_logic.update_over_time(user_id, row)
-    embed = await build_pet_embed(row, transient=transient)
-    content = prefix or None
-    await msg.edit(content=content, embed=embed, view=PetView(user_id))
-    for evo in evo_msgs:
-        await maybe_send_notification(thread, row, evo)
-    if row["journeyed"]:
-        letter_embed = await build_letter_embed(CHARACTERS[row["character_id"]]["name"])
-        if letter_embed:
-            await thread.send(embed=letter_embed)
+    embed = await build_embed(row, transient=transient)
+
+    content = prefix if prefix else ""
+    if evo_msgs:
+        content = (content + "\n\n" if content else "") + "\n".join(evo_msgs)
+        for m in evo_msgs:
+            await maybe_send_notification(thread, row, m)
+
+        if row["journeyed"]:
+            # 旅立ち時の手紙表示
+            owned = database.fetch_collection(user_id)
+            if owned:
+                latest_character_id = owned[-1]["character_id"]
+                character_name = CHARACTERS[latest_character_id]["name"]
+            else:
+                character_name = CHARACTERS[row["character_id"]]["name"]
+
+            letter_embed = await build_letter_embed(character_name)
+            if letter_embed:
+                await thread.send(embed=letter_embed)
+
+    await msg.edit(content=content or None, embed=embed, view=PetView(user_id))
+
 
 async def ensure_main_panel():
     if not ENTRY_CHANNEL_ID:
         return
+
     await bot.wait_until_ready()
     channel = bot.get_channel(ENTRY_CHANNEL_ID)
     if channel is None:
@@ -79,6 +109,7 @@ async def ensure_main_panel():
             channel = await bot.fetch_channel(ENTRY_CHANNEL_ID)
         except Exception:
             return
+
     if not isinstance(channel, discord.TextChannel):
         return
 
@@ -86,23 +117,36 @@ async def ensure_main_panel():
     if panel_id:
         try:
             msg = await channel.fetch_message(int(panel_id))
-            await msg.edit(content="**○○っちへようこそ！**\n育成開始を押して遊んでね。", view=MainPanelView())
+            await msg.edit(
+                content="**○○っちへようこそ！**\n育成開始を押して遊んでね。",
+                view=MainPanelView()
+            )
             return
         except Exception:
             pass
-    msg = await channel.send("**○○っちへようこそ！**\n育成開始を押して遊んでね。", view=MainPanelView())
+
+    msg = await channel.send(
+        "**○○っちへようこそ！**\n育成開始を押して遊んでね。",
+        view=MainPanelView()
+    )
     database.set_meta("main_panel_message_id", str(msg.id))
+
 
 async def auto_tick_loop():
     await bot.wait_until_ready()
     while not bot.is_closed():
-        rows = database.fetch_all_active_pets()
-        for row in rows:
+        conn = database.get_conn()
+        rows = conn.execute("SELECT user_id FROM pets WHERE journeyed = 0").fetchall()
+        conn.close()
+
+        for r in rows:
             try:
-                await render_panel(int(row["user_id"]))
+                await refresh_panel_for_user(int(r["user_id"]))
             except Exception:
                 pass
-        await asyncio.sleep(AUTO_TICK_SECONDS)
+
+        await asyncio.sleep(60)
+
 
 class MainPanelView(discord.ui.View):
     def __init__(self):
@@ -117,7 +161,10 @@ class MainPanelView(discord.ui.View):
 
         row = database.fetch_pet(user.id)
         if row and not row["journeyed"] and row["thread_id"]:
-            return await interaction.response.send_message(f"すでに育成中だよ。スレッド <#{row['thread_id']}> を見てね。", ephemeral=True)
+            return await interaction.response.send_message(
+                "すでに育成中のデータがあるよ。『育成の続きから』を押して再開してね。",
+                ephemeral=True
+            )
 
         channel = interaction.channel
         if not isinstance(channel, discord.TextChannel):
@@ -126,22 +173,93 @@ class MainPanelView(discord.ui.View):
         thread = await channel.create_thread(
             name=f"{user.display_name}っち",
             type=discord.ChannelType.public_thread,
-            auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES if THREAD_AUTO_ARCHIVE_MINUTES in [60, 1440, 4320, 10080] else 60,
+            auto_archive_duration=60
         )
+
         row, _ = game_logic.start_pet_if_needed(user.id, guild.id, thread.id)
-        embed = await build_pet_embed(row)
+        embed = await build_embed(row)
         panel = await thread.send(
             f"{user.mention} の育成スレッドができたよ！\n"
-            "【通知について】\n"
-            "この育成ゲームは、たまごっち風に通知が多めです。\n"
-            "忙しい時や寝る前は設定から通知モードやスリープを調整してね。",
+            "通知は最初は『たまごっち』設定です。忙しい時は設定で変えてね。",
             embed=embed,
-            view=PetView(user.id),
+            view=PetView(user.id)
         )
-        database.update_pet(user.id, panel_message_id=str(panel.id))
+        database.update_pet(user.id, panel_message_id=str(panel.id), thread_id=str(thread.id))
         await interaction.response.send_message(f"育成を開始したよ！ {thread.mention}", ephemeral=True)
 
-    @discord.ui.button(label="図鑑", style=discord.ButtonStyle.blurple, custom_id="main:dex")
+    @discord.ui.button(label="育成の続きから", style=discord.ButtonStyle.blurple, custom_id="main:continue")
+    async def continue_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user = interaction.user
+        guild = interaction.guild
+        if guild is None:
+            return await interaction.response.send_message("サーバー内で使ってね。", ephemeral=True)
+
+        row = database.fetch_pet(user.id)
+        if not row or row["journeyed"]:
+            return await interaction.response.send_message(
+                "続きの育成データが見つからないよ。『育成開始』から始めてね。",
+                ephemeral=True
+            )
+
+        thread = None
+        if row["thread_id"]:
+            try:
+                thread = bot.get_channel(int(row["thread_id"]))
+                if thread is None:
+                    thread = await bot.fetch_channel(int(row["thread_id"]))
+            except Exception:
+                thread = None
+
+        # スレッドが消えていたら新しく作る
+        if thread is None:
+            channel = interaction.channel
+            if not isinstance(channel, discord.TextChannel):
+                return await interaction.response.send_message("テキストチャンネルで使ってね。", ephemeral=True)
+
+            new_thread = await channel.create_thread(
+                name=f"{user.display_name}っち-つづき",
+                type=discord.ChannelType.public_thread,
+                auto_archive_duration=60
+            )
+            database.update_pet(user.id, thread_id=str(new_thread.id), panel_message_id=None)
+            row = database.fetch_pet(user.id)
+            embed = await build_embed(row)
+            panel = await new_thread.send(
+                f"{user.mention} の育成データを続きから復帰したよ！\n"
+                "前のスレッドが見つからなかったため、新しいスレッドを作成しました。",
+                embed=embed,
+                view=PetView(user.id)
+            )
+            database.update_pet(user.id, panel_message_id=str(panel.id))
+            return await interaction.response.send_message(
+                f"育成データを復帰したよ！ {new_thread.mention}",
+                ephemeral=True
+            )
+
+        # パネルメッセージが消えてたら再作成
+        panel_ok = False
+        if row["panel_message_id"]:
+            try:
+                await thread.fetch_message(int(row["panel_message_id"]))
+                panel_ok = True
+            except Exception:
+                panel_ok = False
+
+        if not panel_ok:
+            embed = await build_embed(row)
+            panel = await thread.send(
+                f"{user.mention} の育成パネルを再作成したよ！",
+                embed=embed,
+                view=PetView(user.id)
+            )
+            database.update_pet(user.id, panel_message_id=str(panel.id))
+
+        return await interaction.response.send_message(
+            f"続きから再開できるよ！ {thread.mention}",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="図鑑", style=discord.ButtonStyle.gray, custom_id="main:dex")
     async def dex(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
             game_logic.build_dex_text(interaction.user.id),
@@ -154,6 +272,7 @@ class MainPanelView(discord.ui.View):
         await interaction.response.send_message(
             "【あそびかた】\n"
             "・育成開始で専用スレッドができる\n"
+            "・スレッドが消えたら『育成の続きから』で復帰できる\n"
             "・ボタンでお世話する\n"
             "・卵のあいだは見守るだけ\n"
             "・通知はデフォルトで本家たまごっち風\n"
@@ -161,6 +280,7 @@ class MainPanelView(discord.ui.View):
             "・成熟後は旅立って図鑑に登録される",
             ephemeral=True
         )
+
 
 class PetView(discord.ui.View):
     def __init__(self, owner_id: int):
@@ -173,58 +293,62 @@ class PetView(discord.ui.View):
             return False
         return True
 
-    async def _do_action(self, interaction: discord.Interaction, action: str):
+    async def _do_action(self, interaction, action):
         row = database.fetch_pet(self.owner_id)
-        if not row:
-            return await interaction.response.send_message("育成データが見つからないよ。", ephemeral=True)
-        row, result, evo_msgs, transient = game_logic.perform_action(self.owner_id, row, action)
+        row, result, msgs, transient = game_logic.perform_action(self.owner_id, row, action)
         await interaction.response.defer()
-        await render_panel(self.owner_id, prefix=result, transient=transient)
-        for msg in evo_msgs:
-            await maybe_send_notification(interaction.channel, row, msg)
+        await refresh_panel_for_user(self.owner_id, prefix=result, transient=transient)
+
+        thread = interaction.channel
+        for m in msgs:
+            await maybe_send_notification(thread, row, m)
+            if row["journeyed"]:
+                letter_embed = await build_letter_embed(CHARACTERS[row["character_id"]]["name"])
+                if letter_embed:
+                    await thread.send(embed=letter_embed)
 
     @discord.ui.button(label="ごはん", style=discord.ButtonStyle.green, custom_id="pet:feed")
-    async def feed(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def feed(self, interaction, button):
         if await self._owner_check(interaction):
             await self._do_action(interaction, "feed")
 
     @discord.ui.button(label="おやつ", style=discord.ButtonStyle.blurple, custom_id="pet:snack")
-    async def snack(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def snack(self, interaction, button):
         if await self._owner_check(interaction):
             await self._do_action(interaction, "snack")
 
     @discord.ui.button(label="あそぶ", style=discord.ButtonStyle.blurple, row=1, custom_id="pet:play")
-    async def play(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def play(self, interaction, button):
         if await self._owner_check(interaction):
             await self._do_action(interaction, "play")
 
     @discord.ui.button(label="ねる", style=discord.ButtonStyle.gray, row=1, custom_id="pet:sleep")
-    async def sleep(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def sleep(self, interaction, button):
         if await self._owner_check(interaction):
             await self._do_action(interaction, "sleep")
 
     @discord.ui.button(label="ようす", style=discord.ButtonStyle.gray, row=1, custom_id="pet:status")
-    async def status(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def status(self, interaction, button):
         if await self._owner_check(interaction):
             await self._do_action(interaction, "status")
 
     @discord.ui.button(label="しつけ", style=discord.ButtonStyle.red, row=2, custom_id="pet:discipline")
-    async def discipline(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def discipline(self, interaction, button):
         if await self._owner_check(interaction):
             await self._do_action(interaction, "discipline")
 
     @discord.ui.button(label="おそうじ", style=discord.ButtonStyle.red, row=2, custom_id="pet:clean")
-    async def clean(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def clean(self, interaction, button):
         if await self._owner_check(interaction):
             await self._do_action(interaction, "clean")
 
     @discord.ui.button(label="おくすり", style=discord.ButtonStyle.red, row=2, custom_id="pet:medicine")
-    async def medicine(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def medicine(self, interaction, button):
         if await self._owner_check(interaction):
             await self._do_action(interaction, "medicine")
 
     @discord.ui.button(label="ミニゲーム", style=discord.ButtonStyle.green, row=3, custom_id="pet:minigame")
-    async def minigame(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def minigame(self, interaction, button):
         if not await self._owner_check(interaction):
             return
         row = database.fetch_pet(self.owner_id)
@@ -234,7 +358,7 @@ class PetView(discord.ui.View):
         await interaction.response.send_message("あそぶ音楽ゲームを選んでね。", ephemeral=True, view=MiniGameMenuView(self.owner_id))
 
     @discord.ui.button(label="設定", style=discord.ButtonStyle.gray, row=3, custom_id="pet:settings")
-    async def settings(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def settings(self, interaction, button):
         if not await self._owner_check(interaction):
             return
         row = database.fetch_pet(self.owner_id)
@@ -245,70 +369,72 @@ class PetView(discord.ui.View):
         )
 
     @discord.ui.button(label="おるすばん開始", style=discord.ButtonStyle.blurple, row=4, custom_id="pet:away_start")
-    async def away_start(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def away_start(self, interaction, button):
         if not await self._owner_check(interaction):
             return
         row = database.fetch_pet(self.owner_id)
         _, msg = game_logic.start_odekake(self.owner_id, row)
         await interaction.response.defer()
-        await render_panel(self.owner_id, prefix=msg)
+        await refresh_panel_for_user(self.owner_id, prefix=msg)
 
     @discord.ui.button(label="おるすばん終了", style=discord.ButtonStyle.blurple, row=4, custom_id="pet:away_stop")
-    async def away_stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def away_stop(self, interaction, button):
         if not await self._owner_check(interaction):
             return
         row = database.fetch_pet(self.owner_id)
         _, msg, evo = game_logic.stop_odekake(self.owner_id, row)
         await interaction.response.defer()
-        await render_panel(self.owner_id, prefix=msg)
-        for item in evo:
-            await maybe_send_notification(interaction.channel, row, item)
+        await refresh_panel_for_user(self.owner_id, prefix=msg)
+        for m in evo:
+            await maybe_send_notification(interaction.channel, row, m)
+
 
 class SettingsView(discord.ui.View):
     def __init__(self, owner_id: int):
         super().__init__(timeout=180)
         self.owner_id = owner_id
 
-    async def _guard(self, interaction):
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("本人だけ変更できるよ。", ephemeral=True)
-            return False
-        return True
-
     @discord.ui.button(label="通知:たまごっち", style=discord.ButtonStyle.green)
     async def nt1(self, interaction, button):
-        if not await self._guard(interaction): return
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("本人だけ変更できるよ。", ephemeral=True)
         database.update_pet(self.owner_id, notification_mode="tamagotchi")
         await interaction.response.send_message("通知モードを『たまごっち』にしたよ。", ephemeral=True)
 
     @discord.ui.button(label="通知:ふつう", style=discord.ButtonStyle.blurple)
     async def nt2(self, interaction, button):
-        if not await self._guard(interaction): return
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("本人だけ変更できるよ。", ephemeral=True)
         database.update_pet(self.owner_id, notification_mode="normal")
         await interaction.response.send_message("通知モードを『ふつう』にしたよ。", ephemeral=True)
 
     @discord.ui.button(label="通知:静か", style=discord.ButtonStyle.gray, row=1)
     async def nt3(self, interaction, button):
-        if not await self._guard(interaction): return
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("本人だけ変更できるよ。", ephemeral=True)
         database.update_pet(self.owner_id, notification_mode="quiet")
         await interaction.response.send_message("通知モードを『静か』にしたよ。", ephemeral=True)
 
     @discord.ui.button(label="通知:ミュート", style=discord.ButtonStyle.red, row=1)
     async def nt4(self, interaction, button):
-        if not await self._guard(interaction): return
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("本人だけ変更できるよ。", ephemeral=True)
         database.update_pet(self.owner_id, notification_mode="mute")
         await interaction.response.send_message("通知モードを『ミュート』にしたよ。", ephemeral=True)
 
     @discord.ui.button(label="スリープ 00:00-07:00", style=discord.ButtonStyle.gray, row=2)
     async def sleep_default(self, interaction, button):
-        if not await self._guard(interaction): return
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("本人だけ変更できるよ。", ephemeral=True)
         database.set_sleep_setting(self.owner_id, "00:00", "07:00")
         await interaction.response.send_message("スリープ時間を 00:00〜07:00 にしたよ。", ephemeral=True)
 
     @discord.ui.button(label="リセット", style=discord.ButtonStyle.red, row=2)
     async def reset(self, interaction, button):
-        if not await self._guard(interaction): return
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("本人だけ変更できるよ。", ephemeral=True)
         await interaction.response.send_message("本当に最初からやり直す？", ephemeral=True, view=ResetConfirmView(self.owner_id))
+
 
 class ResetConfirmView(discord.ui.View):
     def __init__(self, owner_id: int):
@@ -319,19 +445,18 @@ class ResetConfirmView(discord.ui.View):
     async def yes(self, interaction, button):
         if interaction.user.id != self.owner_id:
             return await interaction.response.send_message("本人だけ実行できるよ。", ephemeral=True)
-        row = database.fetch_pet(self.owner_id)
+        thread = interaction.channel
         database.delete_pet(self.owner_id)
         await interaction.response.send_message("リセットしたよ。スレッドを閉じるね。", ephemeral=True)
-        if row and row["thread_id"]:
-            try:
-                thread = bot.get_channel(int(row["thread_id"])) or await bot.fetch_channel(int(row["thread_id"]))
-                await thread.delete()
-            except Exception:
-                pass
+        try:
+            await thread.delete()
+        except Exception:
+            pass
 
     @discord.ui.button(label="いいえ", style=discord.ButtonStyle.gray)
     async def no(self, interaction, button):
         await interaction.response.send_message("キャンセルしたよ。", ephemeral=True)
+
 
 class MiniGameMenuView(discord.ui.View):
     def __init__(self, owner_id: int):
@@ -361,12 +486,14 @@ class MiniGameMenuView(discord.ui.View):
     async def melody(self, interaction, button):
         await self.send_game(interaction, "melody")
 
+
 class MiniGameAnswerView(discord.ui.View):
     def __init__(self, owner_id: int, game_key: str):
         super().__init__(timeout=180)
         game = MUSIC_GAMES[game_key]
         for idx, choice in enumerate(game["choices"]):
             self.add_item(MiniGameChoiceButton(owner_id, game_key, idx, choice))
+
 
 class MiniGameChoiceButton(discord.ui.Button):
     def __init__(self, owner_id: int, game_key: str, idx: int, label: str):
@@ -375,13 +502,14 @@ class MiniGameChoiceButton(discord.ui.Button):
         self.game_key = game_key
         self.idx = idx
 
-    async def callback(self, interaction: discord.Interaction):
+    async def callback(self, interaction):
         if interaction.user.id != self.owner_id:
             return await interaction.response.send_message("本人だけが遊べるよ。", ephemeral=True)
         row = database.fetch_pet(self.owner_id)
         _, msg, evo = game_logic.resolve_minigame(self.owner_id, row, self.game_key, self.idx)
         await interaction.response.send_message(msg + (("\n" + "\n".join(evo)) if evo else ""), ephemeral=True)
-        await render_panel(self.owner_id)
+        await refresh_panel_for_user(self.owner_id)
+
 
 class DexView(discord.ui.View):
     def __init__(self, owner_id: int, page: int):
@@ -397,15 +525,20 @@ class DexView(discord.ui.View):
         if (page + 1) * per < len(DEX_TARGETS):
             self.add_item(DexNavButton(owner_id, page + 1, "次へ"))
 
+
 class DexSelect(discord.ui.Select):
     def __init__(self, owner_id: int, options):
         super().__init__(placeholder="詳細を見るキャラを選んでね", options=options)
         self.owner_id = owner_id
 
-    async def callback(self, interaction: discord.Interaction):
+    async def callback(self, interaction):
         if interaction.user.id != self.owner_id:
             return await interaction.response.send_message("これはあなたの図鑑表示だよ。", ephemeral=True)
-        await interaction.response.send_message(game_logic.build_dex_detail(self.owner_id, self.values[0]), ephemeral=True)
+        await interaction.response.send_message(
+            game_logic.build_dex_detail(self.owner_id, self.values[0]),
+            ephemeral=True
+        )
+
 
 class DexNavButton(discord.ui.Button):
     def __init__(self, owner_id: int, page: int, label: str):
@@ -413,10 +546,14 @@ class DexNavButton(discord.ui.Button):
         self.owner_id = owner_id
         self.page = page
 
-    async def callback(self, interaction: discord.Interaction):
+    async def callback(self, interaction):
         if interaction.user.id != self.owner_id:
             return await interaction.response.send_message("これはあなたの図鑑表示だよ。", ephemeral=True)
-        await interaction.response.edit_message(content=game_logic.build_dex_text(self.owner_id), view=DexView(self.owner_id, self.page))
+        await interaction.response.edit_message(
+            content=game_logic.build_dex_text(self.owner_id),
+            view=DexView(self.owner_id, self.page)
+        )
+
 
 @bot.event
 async def on_ready():
@@ -426,12 +563,17 @@ async def on_ready():
     bot.loop.create_task(ensure_main_panel())
     bot.loop.create_task(auto_tick_loop())
 
+
 @bot.command()
 async def setup_panel(ctx):
     if ADMIN_USER_IDS and ctx.author.id not in ADMIN_USER_IDS:
         return await ctx.send("管理者だけが使えるよ。")
-    msg = await ctx.send("**○○っちへようこそ！**\n育成開始を押して遊んでね。", view=MainPanelView())
+    msg = await ctx.send(
+        "**○○っちへようこそ！**\n育成開始を押して遊んでね。",
+        view=MainPanelView()
+    )
     database.set_meta("main_panel_message_id", str(msg.id))
+
 
 @bot.command()
 async def status(ctx):
@@ -439,17 +581,20 @@ async def status(ctx):
     if not row:
         return await ctx.send("まだ育成していないよ。")
     row, evo = game_logic.update_over_time(ctx.author.id, row)
-    embed = await build_pet_embed(row)
-    await ctx.send(content="\n".join(evo) if evo else None, embed=embed)
+    embed = await build_embed(row)
+    await ctx.send(("\n".join(evo)) if evo else None, embed=embed)
+
 
 @bot.command()
 async def dex(ctx):
     await ctx.send(game_logic.build_dex_text(ctx.author.id), view=DexView(ctx.author.id, 0))
 
+
 @bot.command()
 async def set_sleep(ctx, start: str, end: str):
     database.set_sleep_setting(ctx.author.id, start, end)
     await ctx.send(f"スリープ時間を {start}〜{end} に設定したよ。")
+
 
 if __name__ == "__main__":
     bot.run(DISCORD_BOT_TOKEN)
