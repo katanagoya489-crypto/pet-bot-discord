@@ -18,10 +18,43 @@ intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 WELCOME_MARKER = "○○っちへようこそ！"
+TEMP_MESSAGE_SECONDS = 8
 
 
 def is_owner(interaction: discord.Interaction, owner_id: int) -> bool:
     return interaction.user.id == owner_id
+
+
+async def send_temp_interaction_message(
+    interaction: discord.Interaction,
+    content: str | None = None,
+    *,
+    embed: discord.Embed | None = None,
+    view: discord.ui.View | None = None,
+    ephemeral: bool = True,
+    seconds: int = TEMP_MESSAGE_SECONDS,
+):
+    """
+    一時メッセージ。基本はephemeralで送り、数秒後に自動削除を試みる。
+    Discordの仕様上、削除できないケースでは自然に消える挙動に任せる。
+    """
+    if not interaction.response.is_done():
+        await interaction.response.send_message(content=content, embed=embed, view=view, ephemeral=ephemeral)
+        await asyncio.sleep(seconds)
+        try:
+            await interaction.delete_original_response()
+        except Exception:
+            pass
+    else:
+        try:
+            msg = await interaction.followup.send(content=content, embed=embed, view=view, ephemeral=ephemeral, wait=True)
+            await asyncio.sleep(seconds)
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 async def build_embed(row, transient: str | None = None):
@@ -74,10 +107,6 @@ async def upsert_system_log(thread: discord.Thread, user_id: int, text: str):
 
 
 async def cleanup_old_main_panels(channel: discord.TextChannel, keep_message_id: int | None = None):
-    """
-    入口パネルは常に1件だけにする。
-    BOT自身の welcome パネルを見つけたら、keep_message_id 以外は削除。
-    """
     try:
         async for m in channel.history(limit=50):
             if m.author.id != bot.user.id:
@@ -96,16 +125,11 @@ async def cleanup_old_main_panels(channel: discord.TextChannel, keep_message_id:
         pass
 
 
-async def delete_recent_thread_created_log(parent_channel: discord.TextChannel, thread_id: int):
-    """
-    親チャンネルに残るスレッド開始ログを、見つかった場合だけ消す。
-    Discord側の仕様で消せないこともあるので best effort。
-    """
+async def delete_recent_thread_created_log(parent_channel: discord.TextChannel):
     await asyncio.sleep(1.2)
     try:
         async for m in parent_channel.history(limit=10):
             if m.type == discord.MessageType.thread_created:
-                # thread_created の対象スレッドを直接取れない環境もあるため、近傍ログを削除対象にする
                 try:
                     await m.delete()
                 except Exception:
@@ -120,7 +144,7 @@ async def create_clean_thread(parent_channel: discord.TextChannel, thread_name: 
         type=discord.ChannelType.public_thread,
         auto_archive_duration=60
     )
-    bot.loop.create_task(delete_recent_thread_created_log(parent_channel, thread.id))
+    bot.loop.create_task(delete_recent_thread_created_log(parent_channel))
     return thread
 
 
@@ -233,18 +257,18 @@ class MainPanelView(discord.ui.View):
         user = interaction.user
         guild = interaction.guild
         if guild is None:
-            return await interaction.response.send_message("サーバー内で使ってね。", ephemeral=True)
+            return await send_temp_interaction_message(interaction, "サーバー内で使ってね。")
 
         row = database.fetch_pet(user.id)
         if row and not row["journeyed"]:
-            return await interaction.response.send_message(
-                "すでに育成中のデータがあるよ。『育成の続きから』を押して再開してね。",
-                ephemeral=True
+            return await send_temp_interaction_message(
+                interaction,
+                "すでに育成中のデータがあるよ。『育成の続きから』を押して再開してね。"
             )
 
         channel = interaction.channel
         if not isinstance(channel, discord.TextChannel):
-            return await interaction.response.send_message("テキストチャンネルで使ってね。", ephemeral=True)
+            return await send_temp_interaction_message(interaction, "テキストチャンネルで使ってね。")
 
         try:
             thread = await create_clean_thread(channel, f"{user.display_name}っち")
@@ -261,23 +285,23 @@ class MainPanelView(discord.ui.View):
                 thread_id=str(thread.id),
                 system_message_id=None,
             )
-            await interaction.response.send_message(f"育成を開始したよ！ {thread.mention}", ephemeral=True)
+            await send_temp_interaction_message(interaction, f"育成を開始したよ！ {thread.mention}")
         except Exception as e:
             if not interaction.response.is_done():
-                await interaction.response.send_message(f"育成開始に失敗したよ。管理者に伝えてね。\n`{type(e).__name__}`", ephemeral=True)
+                await send_temp_interaction_message(interaction, f"育成開始に失敗したよ。管理者に伝えてね。\n`{type(e).__name__}`")
 
     @discord.ui.button(label="育成の続きから", style=discord.ButtonStyle.blurple, custom_id="main:continue")
     async def continue_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         user = interaction.user
         guild = interaction.guild
         if guild is None:
-            return await interaction.response.send_message("サーバー内で使ってね。", ephemeral=True)
+            return await send_temp_interaction_message(interaction, "サーバー内で使ってね。")
 
         row = database.fetch_pet(user.id)
         if not row or row["journeyed"]:
-            return await interaction.response.send_message(
-                "続きの育成データが見つからないよ。『育成開始』から始めてね。",
-                ephemeral=True
+            return await send_temp_interaction_message(
+                interaction,
+                "続きの育成データが見つからないよ。『育成開始』から始めてね。"
             )
 
         thread = None
@@ -293,7 +317,7 @@ class MainPanelView(discord.ui.View):
             if thread is None:
                 channel = interaction.channel
                 if not isinstance(channel, discord.TextChannel):
-                    return await interaction.response.send_message("テキストチャンネルで使ってね。", ephemeral=True)
+                    return await send_temp_interaction_message(interaction, "テキストチャンネルで使ってね。")
 
                 new_thread = await create_clean_thread(channel, f"{user.display_name}っち-つづき")
                 database.update_pet(user.id, thread_id=str(new_thread.id), panel_message_id=None, system_message_id=None)
@@ -305,10 +329,7 @@ class MainPanelView(discord.ui.View):
                     view=PetView(user.id)
                 )
                 database.update_pet(user.id, panel_message_id=str(panel.id))
-                return await interaction.response.send_message(
-                    f"育成データを復帰したよ！ {new_thread.mention}",
-                    ephemeral=True
-                )
+                return await send_temp_interaction_message(interaction, f"育成データを復帰したよ！ {new_thread.mention}")
 
             panel_ok = False
             if row["panel_message_id"]:
@@ -327,25 +348,24 @@ class MainPanelView(discord.ui.View):
                 )
                 database.update_pet(user.id, panel_message_id=str(panel.id))
 
-            await interaction.response.send_message(
-                f"続きから再開できるよ！ {thread.mention}",
-                ephemeral=True
-            )
+            await send_temp_interaction_message(interaction, f"続きから再開できるよ！ {thread.mention}")
         except Exception as e:
             if not interaction.response.is_done():
-                await interaction.response.send_message(f"続きからの復帰に失敗したよ。管理者に伝えてね。\n`{type(e).__name__}`", ephemeral=True)
+                await send_temp_interaction_message(interaction, f"続きからの復帰に失敗したよ。管理者に伝えてね。\n`{type(e).__name__}`")
 
     @discord.ui.button(label="図鑑", style=discord.ButtonStyle.gray, custom_id="main:dex")
     async def dex(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
+        await send_temp_interaction_message(
+            interaction,
             game_logic.build_dex_text(interaction.user.id),
-            ephemeral=True,
-            view=DexView(interaction.user.id, 0)
+            view=DexView(interaction.user.id, 0),
+            seconds=20
         )
 
     @discord.ui.button(label="あそびかた", style=discord.ButtonStyle.gray, custom_id="main:help")
     async def help_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
+        await send_temp_interaction_message(
+            interaction,
             "【あそびかた】\n"
             "・育成開始で専用スレッドができる\n"
             "・スレッドが消えたら『育成の続きから』で復帰できる\n"
@@ -354,7 +374,7 @@ class MainPanelView(discord.ui.View):
             "・通知はデフォルトで本家たまごっち風\n"
             "・忙しい時は設定→通知設定/スリープ設定がおすすめ\n"
             "・成熟後は旅立って図鑑に登録される",
-            ephemeral=True
+            seconds=20
         )
 
 
@@ -365,7 +385,7 @@ class PetView(discord.ui.View):
 
     async def _owner_check(self, interaction: discord.Interaction) -> bool:
         if not is_owner(interaction, self.owner_id):
-            await interaction.response.send_message("この子のお世話は本人だけができるよ。", ephemeral=True)
+            await send_temp_interaction_message(interaction, "この子のお世話は本人だけができるよ。")
             return False
         return True
 
@@ -433,11 +453,12 @@ class PetView(discord.ui.View):
         row = database.fetch_pet(self.owner_id)
         _, err = game_logic.start_minigame(self.owner_id, row, "rhythm")
         if err:
-            return await interaction.response.send_message(err, ephemeral=True)
-        await interaction.response.send_message(
+            return await send_temp_interaction_message(interaction, err)
+        await send_temp_interaction_message(
+            interaction,
             "あそぶ音楽ゲームを選んでね。",
-            ephemeral=True,
-            view=MiniGameMenuView(self.owner_id)
+            view=MiniGameMenuView(self.owner_id),
+            seconds=15
         )
 
     @discord.ui.button(label="設定", style=discord.ButtonStyle.gray, row=3, custom_id="pet:settings")
@@ -445,10 +466,11 @@ class PetView(discord.ui.View):
         if not await self._owner_check(interaction):
             return
         row = database.fetch_pet(self.owner_id)
-        await interaction.response.send_message(
+        await send_temp_interaction_message(
+            interaction,
             f"通知モード: {game_logic.notification_mode_label(row['notification_mode'])}",
-            ephemeral=True,
-            view=SettingsView(self.owner_id)
+            view=SettingsView(self.owner_id),
+            seconds=20
         )
 
     @discord.ui.button(label="おるすばん開始", style=discord.ButtonStyle.blurple, row=4, custom_id="pet:away_start")
@@ -482,43 +504,48 @@ class SettingsView(discord.ui.View):
     @discord.ui.button(label="通知:たまごっち", style=discord.ButtonStyle.green)
     async def nt1(self, interaction, button):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("本人だけ変更できるよ。", ephemeral=True)
+            return await send_temp_interaction_message(interaction, "本人だけ変更できるよ。")
         database.update_pet(self.owner_id, notification_mode="tamagotchi")
-        await interaction.response.send_message("通知モードを『たまごっち』にしたよ。", ephemeral=True)
+        await send_temp_interaction_message(interaction, "通知モードを『たまごっち』にしたよ。")
 
     @discord.ui.button(label="通知:ふつう", style=discord.ButtonStyle.blurple)
     async def nt2(self, interaction, button):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("本人だけ変更できるよ。", ephemeral=True)
+            return await send_temp_interaction_message(interaction, "本人だけ変更できるよ。")
         database.update_pet(self.owner_id, notification_mode="normal")
-        await interaction.response.send_message("通知モードを『ふつう』にしたよ。", ephemeral=True)
+        await send_temp_interaction_message(interaction, "通知モードを『ふつう』にしたよ。")
 
     @discord.ui.button(label="通知:静か", style=discord.ButtonStyle.gray, row=1)
     async def nt3(self, interaction, button):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("本人だけ変更できるよ。", ephemeral=True)
+            return await send_temp_interaction_message(interaction, "本人だけ変更できるよ。")
         database.update_pet(self.owner_id, notification_mode="quiet")
-        await interaction.response.send_message("通知モードを『静か』にしたよ。", ephemeral=True)
+        await send_temp_interaction_message(interaction, "通知モードを『静か』にしたよ。")
 
     @discord.ui.button(label="通知:ミュート", style=discord.ButtonStyle.red, row=1)
     async def nt4(self, interaction, button):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("本人だけ変更できるよ。", ephemeral=True)
+            return await send_temp_interaction_message(interaction, "本人だけ変更できるよ。")
         database.update_pet(self.owner_id, notification_mode="mute")
-        await interaction.response.send_message("通知モードを『ミュート』にしたよ。", ephemeral=True)
+        await send_temp_interaction_message(interaction, "通知モードを『ミュート』にしたよ。")
 
     @discord.ui.button(label="スリープ 00:00-07:00", style=discord.ButtonStyle.gray, row=2)
     async def sleep_default(self, interaction, button):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("本人だけ変更できるよ。", ephemeral=True)
+            return await send_temp_interaction_message(interaction, "本人だけ変更できるよ。")
         database.set_sleep_setting(self.owner_id, "00:00", "07:00")
-        await interaction.response.send_message("スリープ時間を 00:00〜07:00 にしたよ。", ephemeral=True)
+        await send_temp_interaction_message(interaction, "スリープ時間を 00:00〜07:00 にしたよ。")
 
     @discord.ui.button(label="リセット", style=discord.ButtonStyle.red, row=2)
     async def reset(self, interaction, button):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("本人だけ変更できるよ。", ephemeral=True)
-        await interaction.response.send_message("本当に最初からやり直す？", ephemeral=True, view=ResetConfirmView(self.owner_id))
+            return await send_temp_interaction_message(interaction, "本人だけ変更できるよ。")
+        await send_temp_interaction_message(
+            interaction,
+            "本当に最初からやり直す？",
+            view=ResetConfirmView(self.owner_id),
+            seconds=20
+        )
 
 
 class ResetConfirmView(discord.ui.View):
@@ -529,10 +556,10 @@ class ResetConfirmView(discord.ui.View):
     @discord.ui.button(label="はい", style=discord.ButtonStyle.red)
     async def yes(self, interaction, button):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("本人だけ実行できるよ。", ephemeral=True)
+            return await send_temp_interaction_message(interaction, "本人だけ実行できるよ。")
         thread = interaction.channel
         database.delete_pet(self.owner_id)
-        await interaction.response.send_message("リセットしたよ。スレッドを閉じるね。", ephemeral=True)
+        await send_temp_interaction_message(interaction, "リセットしたよ。スレッドを閉じるね。")
         try:
             await thread.delete()
         except Exception:
@@ -540,7 +567,7 @@ class ResetConfirmView(discord.ui.View):
 
     @discord.ui.button(label="いいえ", style=discord.ButtonStyle.gray)
     async def no(self, interaction, button):
-        await interaction.response.send_message("キャンセルしたよ。", ephemeral=True)
+        await send_temp_interaction_message(interaction, "キャンセルしたよ。")
 
 
 class MiniGameMenuView(discord.ui.View):
@@ -552,11 +579,12 @@ class MiniGameMenuView(discord.ui.View):
         row = database.fetch_pet(self.owner_id)
         game, err = game_logic.start_minigame(self.owner_id, row, key)
         if err:
-            return await interaction.response.send_message(err, ephemeral=True)
-        await interaction.response.send_message(
+            return await send_temp_interaction_message(interaction, err)
+        await send_temp_interaction_message(
+            interaction,
             f"**{game['title']}**\n{game['question']}",
-            ephemeral=True,
-            view=MiniGameAnswerView(self.owner_id, key)
+            view=MiniGameAnswerView(self.owner_id, key),
+            seconds=15
         )
 
     @discord.ui.button(label="リズム", style=discord.ButtonStyle.green)
@@ -589,7 +617,7 @@ class MiniGameChoiceButton(discord.ui.Button):
 
     async def callback(self, interaction):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("本人だけが遊べるよ。", ephemeral=True)
+            return await send_temp_interaction_message(interaction, "本人だけが遊べるよ。")
 
         row = database.fetch_pet(self.owner_id)
         _, msg, evo = game_logic.resolve_minigame(self.owner_id, row, self.game_key, self.idx)
@@ -598,9 +626,15 @@ class MiniGameChoiceButton(discord.ui.Button):
             content="このミニゲームは終了したよ。",
             view=None
         )
-        await interaction.followup.send(
-            msg + (("\n" + "\n".join(evo)) if evo else ""),
-            ephemeral=True
+        await asyncio.sleep(2)
+        try:
+            await interaction.delete_original_response()
+        except Exception:
+            pass
+
+        await send_temp_interaction_message(
+            interaction,
+            msg + (("\n" + "\n".join(evo)) if evo else "")
         )
         await refresh_panel_for_user(self.owner_id)
 
@@ -635,10 +669,11 @@ class DexSelect(discord.ui.Select):
 
     async def callback(self, interaction):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("これはあなたの図鑑表示だよ。", ephemeral=True)
-        await interaction.response.send_message(
+            return await send_temp_interaction_message(interaction, "これはあなたの図鑑表示だよ。")
+        await send_temp_interaction_message(
+            interaction,
             game_logic.build_dex_detail(self.owner_id, self.values[0]),
-            ephemeral=True
+            seconds=20
         )
 
 
@@ -650,7 +685,7 @@ class DexNavButton(discord.ui.Button):
 
     async def callback(self, interaction):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("これはあなたの図鑑表示だよ。", ephemeral=True)
+            return await send_temp_interaction_message(interaction, "これはあなたの図鑑表示だよ。")
         await interaction.response.edit_message(
             content=game_logic.build_dex_text(self.owner_id),
             view=DexView(self.owner_id, self.page)
