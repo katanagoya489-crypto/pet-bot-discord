@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 import asyncio
 import discord
@@ -54,16 +53,11 @@ async def maybe_send_notification(thread: discord.abc.Messageable, row, text: st
 
 
 async def upsert_system_log(thread: discord.Thread, user_id: int, text: str):
-    """
-    システムログは常に1つだけ残す。
-    既存の system_message_id があればそのメッセージを編集し、
-    なければ新規作成してIDを保存する。
-    """
     row = database.fetch_pet(user_id)
     if not row:
         return
 
-    system_message_id = row["system_message_id"] if "system_message_id" in row.keys() else None
+    system_message_id = row["system_message_id"]
 
     if system_message_id:
         try:
@@ -103,10 +97,10 @@ async def refresh_panel_for_user(user_id: int, prefix: str = "", transient: str 
 
     content = prefix if prefix else None
 
-    # 通知・進化・旅立ちログは、長く残さず system log 1件に集約
     if evo_msgs:
         merged = "\n".join(evo_msgs)
         await upsert_system_log(thread, user_id, merged)
+
         for m in evo_msgs:
             await maybe_send_notification(thread, row, m)
 
@@ -187,7 +181,7 @@ class MainPanelView(discord.ui.View):
             return await interaction.response.send_message("サーバー内で使ってね。", ephemeral=True)
 
         row = database.fetch_pet(user.id)
-        if row and not row["journeyed"] and row["thread_id"]:
+        if row and not row["journeyed"]:
             return await interaction.response.send_message(
                 "すでに育成中のデータがあるよ。『育成の続きから』を押して再開してね。",
                 ephemeral=True
@@ -284,7 +278,7 @@ class MainPanelView(discord.ui.View):
             )
             database.update_pet(user.id, panel_message_id=str(panel.id))
 
-        return await interaction.response.send_message(
+        await interaction.response.send_message(
             f"続きから再開できるよ！ {thread.mention}",
             ephemeral=True
         )
@@ -548,7 +542,6 @@ class MiniGameChoiceButton(discord.ui.Button):
         row = database.fetch_pet(self.owner_id)
         _, msg, evo = game_logic.resolve_minigame(self.owner_id, row, self.game_key, self.idx)
 
-        # 一回押したらそのミニゲーム画面は消す
         await interaction.response.edit_message(
             content="このミニゲームは終了したよ。",
             view=None
@@ -565,13 +558,21 @@ class DexView(discord.ui.View):
         super().__init__(timeout=180)
         self.owner_id = owner_id
         self.page = page
+
+        owned_rows = database.fetch_collection(owner_id)
+        owned_ids = [r["character_id"] for r in owned_rows]
+
+        owned_target_ids = [cid for cid in DEX_TARGETS if cid in owned_ids]
         per = 4
-        chunk = DEX_TARGETS[page * per:(page + 1) * per]
-        options = [discord.SelectOption(label=CHARACTERS[c]["name"], value=c) for c in chunk]
-        self.add_item(DexSelect(owner_id, options))
+        chunk = owned_target_ids[page * per:(page + 1) * per]
+
+        if chunk:
+            options = [discord.SelectOption(label=CHARACTERS[c]["name"], value=c) for c in chunk]
+            self.add_item(DexSelect(owner_id, options))
+
         if page > 0:
             self.add_item(DexNavButton(owner_id, page - 1, "前へ"))
-        if (page + 1) * per < len(DEX_TARGETS):
+        if (page + 1) * per < len(owned_target_ids):
             self.add_item(DexNavButton(owner_id, page + 1, "次へ"))
 
 
