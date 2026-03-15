@@ -492,9 +492,4 @@ def call_message_text(user_mention:str, row):
     else:
         head = "●●● 注意アイコン点灯中"
         lead = "かなりこまってるよ！"
-    return f"{head}
-{beep}{lead}
-{user_mention}
-{title}
-{body}
-👉 おすすめ：{recommend}"
+    return f"{head}\n{beep}{lead}\n{user_mention}\n{title}\n{body}\n👉 おすすめ：{recommend}"
