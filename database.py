@@ -5,7 +5,6 @@ import time
 from typing import Any
 from config import DATABASE_PATH
 
-
 def get_conn():
     folder = os.path.dirname(DATABASE_PATH)
     if folder:
@@ -14,11 +13,9 @@ def get_conn():
     conn.row_factory = sqlite3.Row
     return conn
 
-
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute("""
     CREATE TABLE IF NOT EXISTS pets (
         user_id TEXT PRIMARY KEY,
@@ -28,15 +25,21 @@ def init_db():
         system_message_id TEXT,
         character_id TEXT NOT NULL,
         stage TEXT NOT NULL,
-        hunger INTEGER NOT NULL DEFAULT 20,
-        mood INTEGER NOT NULL DEFAULT 70,
-        sleepiness INTEGER NOT NULL DEFAULT 10,
+        hunger INTEGER NOT NULL DEFAULT 4,
+        mood INTEGER NOT NULL DEFAULT 4,
+        sleepiness INTEGER NOT NULL DEFAULT 0,
         affection INTEGER NOT NULL DEFAULT 20,
-        stress INTEGER NOT NULL DEFAULT 10,
+        stress INTEGER NOT NULL DEFAULT 0,
         discipline INTEGER NOT NULL DEFAULT 0,
         poop INTEGER NOT NULL DEFAULT 0,
         is_sick INTEGER NOT NULL DEFAULT 0,
         call_flag INTEGER NOT NULL DEFAULT 0,
+        call_reason TEXT,
+        is_whim_call INTEGER NOT NULL DEFAULT 0,
+        last_whim_at INTEGER NOT NULL DEFAULT 0,
+        last_call_notified_at INTEGER NOT NULL DEFAULT 0,
+        evolution_warned INTEGER NOT NULL DEFAULT 0,
+        last_random_event_at INTEGER NOT NULL DEFAULT 0,
         age_seconds INTEGER NOT NULL DEFAULT 0,
         total_feed_count INTEGER NOT NULL DEFAULT 0,
         total_snack_count INTEGER NOT NULL DEFAULT 0,
@@ -49,6 +52,7 @@ def init_db():
         total_minigame_count INTEGER NOT NULL DEFAULT 0,
         total_minigame_win_count INTEGER NOT NULL DEFAULT 0,
         care_miss_count INTEGER NOT NULL DEFAULT 0,
+        sickness_count INTEGER NOT NULL DEFAULT 0,
         night_visit_count INTEGER NOT NULL DEFAULT 0,
         odekake_active INTEGER NOT NULL DEFAULT 0,
         odekake_started_at INTEGER,
@@ -60,48 +64,23 @@ def init_db():
         journeyed INTEGER NOT NULL DEFAULT 0
     )
     """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS collection (
-        user_id TEXT NOT NULL,
-        character_id TEXT NOT NULL,
-        obtained_at INTEGER NOT NULL,
-        PRIMARY KEY (user_id, character_id)
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS evolution_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        from_character_id TEXT NOT NULL,
-        to_character_id TEXT NOT NULL,
-        evolved_at INTEGER NOT NULL
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS settings (
-        user_id TEXT PRIMARY KEY,
-        sleep_start TEXT NOT NULL DEFAULT '00:00',
-        sleep_end TEXT NOT NULL DEFAULT '07:00'
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-    )
-    """)
-
+    cur.execute("""CREATE TABLE IF NOT EXISTS collection (user_id TEXT NOT NULL, character_id TEXT NOT NULL, obtained_at INTEGER NOT NULL, PRIMARY KEY (user_id, character_id))""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS evolution_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, from_character_id TEXT NOT NULL, to_character_id TEXT NOT NULL, evolved_at INTEGER NOT NULL)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS settings (user_id TEXT PRIMARY KEY, sleep_start TEXT NOT NULL DEFAULT '00:00', sleep_end TEXT NOT NULL DEFAULT '07:00')""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)""")
     conn.commit()
 
-    # 古いDBからの移行
     for stmt in [
         "ALTER TABLE pets ADD COLUMN panel_message_id TEXT",
         "ALTER TABLE pets ADD COLUMN system_message_id TEXT",
         "ALTER TABLE pets ADD COLUMN notification_mode TEXT NOT NULL DEFAULT 'tamagotchi'",
+        "ALTER TABLE pets ADD COLUMN call_reason TEXT",
+        "ALTER TABLE pets ADD COLUMN is_whim_call INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE pets ADD COLUMN last_whim_at INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE pets ADD COLUMN last_call_notified_at INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE pets ADD COLUMN evolution_warned INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE pets ADD COLUMN last_random_event_at INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE pets ADD COLUMN sickness_count INTEGER NOT NULL DEFAULT 0",
     ]:
         try:
             cur.execute(stmt)
@@ -111,28 +90,37 @@ def init_db():
 
     conn.close()
 
-
 def fetch_pet(user_id: int):
     conn = get_conn()
     row = conn.execute("SELECT * FROM pets WHERE user_id = ?", (str(user_id),)).fetchone()
     conn.close()
     return row
 
-
 def create_pet(user_id: int, guild_id: int, thread_id: int):
     now = int(time.time())
     conn = get_conn()
     conn.execute("""
-        INSERT OR REPLACE INTO pets (
-            user_id, guild_id, thread_id, panel_message_id, system_message_id,
-            character_id, stage, hunger, mood, sleepiness, affection,
-            stress, discipline, poop, is_sick, call_flag, age_seconds,
-            birth_at, stage_entered_at, last_access_at, notification_mode
-        ) VALUES (?, ?, ?, NULL, NULL, 'egg_yuiran', 'egg', 20, 70, 10, 20, 10, 0, 0, 0, 0, 0, ?, ?, ?, 'tamagotchi')
+    INSERT OR REPLACE INTO pets (
+        user_id, guild_id, thread_id, panel_message_id, system_message_id, character_id, stage,
+        hunger, mood, sleepiness, affection, stress, discipline, poop, is_sick, call_flag,
+        call_reason, is_whim_call, last_whim_at, last_call_notified_at, evolution_warned,
+        last_random_event_at, age_seconds, total_feed_count, total_snack_count, total_play_count,
+        total_sleep_count, total_status_count, total_clean_count, total_medicine_count,
+        total_discipline_count, total_minigame_count, total_minigame_win_count, care_miss_count,
+        sickness_count, night_visit_count, odekake_active, odekake_started_at, notification_mode,
+        birth_at, stage_entered_at, last_access_at, last_minigame_at, journeyed
+    ) VALUES (?, ?, ?, NULL, NULL, 'egg_yuiran', 'egg',
+        4, 4, 0, 20, 0, 0, 0, 0, 0,
+        NULL, 0, 0, 0, 0,
+        0, 0, 0, 0, 0,
+        0, 0, 0, 0,
+        0, 0, 0, 0,
+        0, 0, 0, NULL, 'tamagotchi',
+        ?, ?, ?, 0, 0
+    )
     """, (str(user_id), str(guild_id), str(thread_id), now, now, now))
     conn.commit()
     conn.close()
-
 
 def update_pet(user_id: int, **fields: Any):
     if not fields:
@@ -144,43 +132,31 @@ def update_pet(user_id: int, **fields: Any):
     conn.commit()
     conn.close()
 
-
 def delete_pet(user_id: int):
     conn = get_conn()
     conn.execute("DELETE FROM pets WHERE user_id = ?", (str(user_id),))
     conn.commit()
     conn.close()
 
-
 def save_collection(user_id: int, character_id: str):
     conn = get_conn()
-    conn.execute(
-        "INSERT OR IGNORE INTO collection (user_id, character_id, obtained_at) VALUES (?, ?, ?)",
-        (str(user_id), character_id, int(time.time()))
-    )
+    conn.execute("INSERT OR IGNORE INTO collection (user_id, character_id, obtained_at) VALUES (?, ?, ?)",
+                 (str(user_id), character_id, int(time.time())))
     conn.commit()
     conn.close()
-
 
 def fetch_collection(user_id: int):
     conn = get_conn()
-    rows = conn.execute(
-        "SELECT * FROM collection WHERE user_id = ? ORDER BY obtained_at ASC",
-        (str(user_id),)
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM collection WHERE user_id = ? ORDER BY obtained_at ASC", (str(user_id),)).fetchall()
     conn.close()
     return rows
 
-
 def add_evolution_log(user_id: int, from_character_id: str, to_character_id: str):
     conn = get_conn()
-    conn.execute(
-        "INSERT INTO evolution_log (user_id, from_character_id, to_character_id, evolved_at) VALUES (?, ?, ?, ?)",
-        (str(user_id), from_character_id, to_character_id, int(time.time()))
-    )
+    conn.execute("INSERT INTO evolution_log (user_id, from_character_id, to_character_id, evolved_at) VALUES (?, ?, ?, ?)",
+                 (str(user_id), from_character_id, to_character_id, int(time.time())))
     conn.commit()
     conn.close()
-
 
 def set_sleep_setting(user_id: int, start: str, end: str):
     conn = get_conn()
@@ -192,13 +168,11 @@ def set_sleep_setting(user_id: int, start: str, end: str):
     conn.commit()
     conn.close()
 
-
 def fetch_sleep_setting(user_id: int):
     conn = get_conn()
     row = conn.execute("SELECT * FROM settings WHERE user_id = ?", (str(user_id),)).fetchone()
     conn.close()
     return row
-
 
 def get_meta(key: str):
     conn = get_conn()
@@ -206,12 +180,8 @@ def get_meta(key: str):
     conn.close()
     return row["value"] if row else None
 
-
 def set_meta(key: str, value: str):
     conn = get_conn()
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        (key, value),
-    )
+    conn.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
     conn.commit()
     conn.close()
