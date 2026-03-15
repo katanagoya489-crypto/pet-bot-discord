@@ -1,10 +1,28 @@
 from __future__ import annotations
 
+import importlib.util
 import random
+import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
-import database
+BASE_DIR = Path(__file__).resolve().parent
+
+
+def _load_local_module(module_name: str):
+    module_path = BASE_DIR / f"{module_name}.py"
+    if module_path.exists():
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        if spec and spec.loader:
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            return module
+    return __import__(module_name)
+
+
+database = _load_local_module("database")
 from game_data import (
     CALL_STAGE_INTERVALS,
     CHARACTERS,

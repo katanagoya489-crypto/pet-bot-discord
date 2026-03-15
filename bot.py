@@ -1,18 +1,36 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import sqlite3
+import sys
 import time
+from pathlib import Path
 
 import discord
 from discord.ext import commands
 
-import database
-import game_logic
+BASE_DIR = Path(__file__).resolve().parent
+
+
+def _load_local_module(module_name: str):
+    module_path = BASE_DIR / f"{module_name}.py"
+    if module_path.exists():
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        if spec and spec.loader:
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            return module
+    return __import__(module_name)
+
+
+database = _load_local_module("database")
+game_logic = _load_local_module("game_logic")
 from game_data import CHARACTERS, DEX_TARGETS, MUSIC_GAMES
 
 try:
-    import image_service
+    image_service = _load_local_module("image_service")
 except Exception:
     class _ImageServiceFallback:
         @staticmethod

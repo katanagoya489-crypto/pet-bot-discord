@@ -19,8 +19,17 @@ CHARACTERS = {
 }
 
 DEX_TARGETS = [
-    "adult_sarii", "adult_icecream", "adult_kou", "adult_nazuna", "adult_kanato",
-    "adult_saina", "adult_akira", "adult_owl", "adult_ichiru", "secret_baaya", "secret_gugu"
+    "adult_sarii",
+    "adult_icecream",
+    "adult_kou",
+    "adult_nazuna",
+    "adult_kanato",
+    "adult_saina",
+    "adult_akira",
+    "adult_owl",
+    "adult_ichiru",
+    "secret_baaya",
+    "secret_gugu",
 ]
 
 STAGE_SECONDS = {
@@ -29,11 +38,18 @@ STAGE_SECONDS = {
     "baby_cororon": 8 * 60 * 60,
     "child_musubi": 24 * 60 * 60,
 }
+
 JOURNEY_MIN_SECONDS = 24 * 60 * 60
 JOURNEY_MAX_SECONDS = 48 * 60 * 60
 EVOLUTION_WARNING_SECONDS = 10 * 60
 MINIGAME_COOLDOWN_SECONDS = 10 * 60
 RANDOM_EVENT_INTERVAL_SECONDS = 45 * 60
+
+CALL_STAGE_INTERVALS = {
+    1: 18 * 60,
+    2: 12 * 60,
+    3: 7 * 60,
+}
 
 NOTIFICATION_REASON_TEXT = {
     "hunger": "🍚 おなかがすいているみたい！",
@@ -53,7 +69,22 @@ RANDOM_EVENTS = [
 ]
 
 MUSIC_GAMES = {
-    "rhythm": {"title": "リズムあそび", "question": "つぎのリズムとおなじものはどれ？ ♪ ♪ ♫", "choices": ["♪♪♫", "♪♫♪", "♫♪♪"], "answer": 0},
-    "instrument": {"title": "音あて", "question": "メロディをささえることが多いのはどれ？", "choices": ["ドラム", "ピアノ", "ギター"], "answer": 1},
-    "melody": {"title": "メロディ記憶", "question": "『ド レ ミ』とおなじならびはどれ？", "choices": ["ドレミ", "レミド", "ドミレ"], "answer": 0},
+    "rhythm": {
+        "title": "リズムあそび",
+        "question": "つぎのリズムとおなじものはどれ？ ♪ ♪ ♫",
+        "choices": ["♪♪♫", "♪♫♪", "♫♪♪"],
+        "answer": 0,
+    },
+    "instrument": {
+        "title": "音あて",
+        "question": "メロディをささえることが多いのはどれ？",
+        "choices": ["ドラム", "ピアノ", "ギター"],
+        "answer": 1,
+    },
+    "melody": {
+        "title": "メロディ記憶",
+        "question": "『ド レ ミ』とおなじならびはどれ？",
+        "choices": ["ドレミ", "レミド", "ドミレ"],
+        "answer": 0,
+    },
 }
