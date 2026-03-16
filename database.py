@@ -74,6 +74,7 @@ MIGRATION_COLUMNS = [
     ("last_random_event_at", "INTEGER NOT NULL DEFAULT 0"), ("sickness_count", "INTEGER NOT NULL DEFAULT 0"), ("total_praise_count", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
+
 def get_conn():
     folder = os.path.dirname(DATABASE_PATH)
     if folder:
@@ -82,9 +83,21 @@ def get_conn():
     conn.row_factory = sqlite3.Row
     return conn
 
+
+def _row_to_dict(row):
+    if row is None:
+        return None
+    return dict(row)
+
+
+def _rows_to_dicts(rows):
+    return [dict(row) for row in rows]
+
+
 def _existing_columns(cur) -> set[str]:
     rows = cur.execute("PRAGMA table_info(pets)").fetchall()
     return {row[1] for row in rows}
+
 
 def init_db():
     conn = get_conn()
@@ -92,7 +105,7 @@ def init_db():
     cur.execute(BASE_CREATE_SQL)
     cur.execute("CREATE TABLE IF NOT EXISTS collection (user_id TEXT NOT NULL, character_id TEXT NOT NULL, obtained_at INTEGER NOT NULL, PRIMARY KEY (user_id, character_id))")
     cur.execute("CREATE TABLE IF NOT EXISTS evolution_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, from_character_id TEXT NOT NULL, to_character_id TEXT NOT NULL, evolved_at INTEGER NOT NULL)")
-    cur.execute("CREATE TABLE IF NOT EXISTS settings (user_id TEXT PRIMARY KEY, sleep_start TEXT NOT NULL DEFAULT '22:00', sleep_end TEXT NOT NULL DEFAULT '07:00')")
+    cur.execute("CREATE TABLE IF NOT EXISTS settings (user_id TEXT PRIMARY KEY, sleep_start TEXT NOT NULL DEFAULT '22:00', sleep_end TEXT NOT NULL DEFAULT '07:00', clock_offset_minutes INTEGER NOT NULL DEFAULT 0, timezone_name TEXT NOT NULL DEFAULT 'Asia/Tokyo')")
     cur.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     conn.commit()
     existing = _existing_columns(cur)
@@ -100,10 +113,16 @@ def init_db():
         if col_name not in existing:
             cur.execute(f"ALTER TABLE pets ADD COLUMN {col_name} {col_def}")
             conn.commit()
+    settings_existing = {row[1] for row in cur.execute("PRAGMA table_info(settings)").fetchall()}
+    settings_migrations = [
+        ("clock_offset_minutes", "INTEGER NOT NULL DEFAULT 0"),
+        ("timezone_name", "TEXT NOT NULL DEFAULT 'Asia/Tokyo'"),
+    ]
+    for col_name, col_def in settings_migrations:
+        if col_name not in settings_existing:
+            cur.execute(f"ALTER TABLE settings ADD COLUMN {col_name} {col_def}")
+            conn.commit()
     conn.close()
-
-def _row_to_dict(row):
-    return dict(row) if row is not None else None
 
 
 def fetch_pet(user_id: int):
@@ -111,6 +130,7 @@ def fetch_pet(user_id: int):
     row = conn.execute("SELECT * FROM pets WHERE user_id = ?", (str(user_id),)).fetchone()
     conn.close()
     return _row_to_dict(row)
+
 
 def create_pet(user_id: int, guild_id: int, thread_id: int):
     now = int(time.time())
@@ -137,6 +157,7 @@ def create_pet(user_id: int, guild_id: int, thread_id: int):
     conn.commit()
     conn.close()
 
+
 def update_pet(user_id: int, **fields: Any):
     if not fields:
         return
@@ -147,11 +168,13 @@ def update_pet(user_id: int, **fields: Any):
     conn.commit()
     conn.close()
 
+
 def delete_pet(user_id: int):
     conn = get_conn()
     conn.execute("DELETE FROM pets WHERE user_id = ?", (str(user_id),))
     conn.commit()
     conn.close()
+
 
 def save_collection(user_id: int, character_id: str):
     conn = get_conn()
@@ -159,11 +182,13 @@ def save_collection(user_id: int, character_id: str):
     conn.commit()
     conn.close()
 
+
 def fetch_collection(user_id: int):
     conn = get_conn()
     rows = conn.execute("SELECT * FROM collection WHERE user_id = ? ORDER BY obtained_at ASC", (str(user_id),)).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return _rows_to_dicts(rows)
+
 
 def add_evolution_log(user_id: int, from_character_id: str, to_character_id: str):
     conn = get_conn()
@@ -171,20 +196,56 @@ def add_evolution_log(user_id: int, from_character_id: str, to_character_id: str
     conn.commit()
     conn.close()
 
-def set_sleep_setting(user_id: int, start: str, end: str):
+
+def ensure_user_settings(user_id: int):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO settings (user_id, sleep_start, sleep_end) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET sleep_start=excluded.sleep_start, sleep_end=excluded.sleep_end",
-        (str(user_id), start, end),
+        "INSERT OR IGNORE INTO settings (user_id, sleep_start, sleep_end, clock_offset_minutes, timezone_name) VALUES (?, '22:00', '07:00', 0, 'Asia/Tokyo')",
+        (str(user_id),),
     )
     conn.commit()
     conn.close()
 
-def fetch_sleep_setting(user_id: int):
+
+def fetch_user_settings(user_id: int):
+    ensure_user_settings(user_id)
     conn = get_conn()
     row = conn.execute("SELECT * FROM settings WHERE user_id = ?", (str(user_id),)).fetchone()
     conn.close()
     return _row_to_dict(row)
+
+
+def set_sleep_setting(user_id: int, start: str, end: str):
+    ensure_user_settings(user_id)
+    conn = get_conn()
+    conn.execute("UPDATE settings SET sleep_start = ?, sleep_end = ? WHERE user_id = ?", (start, end, str(user_id)))
+    conn.commit()
+    conn.close()
+
+
+def set_clock_offset_minutes(user_id: int, minutes: int):
+    ensure_user_settings(user_id)
+    conn = get_conn()
+    conn.execute("UPDATE settings SET clock_offset_minutes = ? WHERE user_id = ?", (int(minutes), str(user_id)))
+    conn.commit()
+    conn.close()
+
+
+def adjust_clock_offset_minutes(user_id: int, delta_minutes: int) -> int:
+    setting = fetch_user_settings(user_id) or {}
+    current = int(setting.get("clock_offset_minutes", 0) or 0)
+    updated = current + int(delta_minutes)
+    set_clock_offset_minutes(user_id, updated)
+    return updated
+
+
+def reset_clock_offset_minutes(user_id: int):
+    set_clock_offset_minutes(user_id, 0)
+
+
+def fetch_sleep_setting(user_id: int):
+    return fetch_user_settings(user_id)
+
 
 def get_meta(key: str):
     conn = get_conn()
@@ -192,22 +253,6 @@ def get_meta(key: str):
     conn.close()
     return row["value"] if row else None
 
-
-def delete_collection(user_id: int):
-    conn = get_conn()
-    conn.execute("DELETE FROM collection WHERE user_id = ?", (str(user_id),))
-    conn.commit()
-    conn.close()
-
-
-def reset_user_all(user_id: int):
-    conn = get_conn()
-    conn.execute("DELETE FROM pets WHERE user_id = ?", (str(user_id),))
-    conn.execute("DELETE FROM collection WHERE user_id = ?", (str(user_id),))
-    conn.execute("DELETE FROM evolution_log WHERE user_id = ?", (str(user_id),))
-    conn.execute("DELETE FROM settings WHERE user_id = ?", (str(user_id),))
-    conn.commit()
-    conn.close()
 
 def set_meta(key: str, value: str):
     conn = get_conn()
