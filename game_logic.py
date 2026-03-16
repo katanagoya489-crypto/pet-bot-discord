@@ -49,6 +49,14 @@ def is_in_sleep_window(now_ts:int, start_str:str|None=None, end_str:str|None=Non
 
 def is_egg(row): return row["character_id"] == "egg_yuiran"
 def pet_name(row): return CHARACTERS[row["character_id"]]["name"]
+def is_adult_like(row):
+    cid = row.get("character_id", "")
+    st = row.get("stage", "")
+    return st == "adult" or cid.startswith("adult_") or cid.startswith("secret_")
+
+def poop_enabled(row):
+    return (not is_egg(row)) and (not is_adult_like(row))
+
 def bar(v:int, m:int=4, full="♥", empty="♡"): return full*v + empty*(m-v)
 def age_days(row): return max(0, (int(time.time())-row["birth_at"])//(24*60*60))
 def current_time_label(user_id:int|None=None, row=None): return local_now(user_id=user_id, row=row).strftime("%H:%M")
@@ -91,6 +99,17 @@ def maybe_start_good_behavior_event(user_id, row, now):
     good_state = row["poop"] == 0 and row["is_sick"] == 0 and row["stress"] <= 25 and row["mood"] >= 2
     if good_state and random.randint(1, 100) <= 6:
         database.update_pet(user_id, good_behavior_pending=1, good_behavior_due_at=now)
+
+
+
+def image_keys_for_debug(row):
+    name = pet_name(row)
+    keys = []
+    if row["character_id"] == "egg_yuiran":
+        keys.extend(["卵", "卵割れる"])
+    else:
+        keys.extend([f"{name}_通常", f"{name}_ごはん", f"{name}_おやつ", f"{name}_眠い", f"{name}_病気", f"{name}_怒り", f"{name}_喜び", f"{name}_ウンチ"])
+    return keys
 
 def image_key_for_pet(row, transient=None):
     name = pet_name(row)
@@ -156,7 +175,7 @@ def get_decay_profile(row):
     if stage == "baby1": return {"hunger_minutes": 22, "mood_minutes": 26, "sleep_gain_minutes": 55, "poop_minutes": 42}
     if stage == "baby2": return {"hunger_minutes": 20, "mood_minutes": 24, "sleep_gain_minutes": 50, "poop_minutes": 40}
     if stage == "child": return {"hunger_minutes": 18, "mood_minutes": 22, "sleep_gain_minutes": 45, "poop_minutes": 36}
-    if stage == "adult": return {"hunger_minutes": 26, "mood_minutes": 30, "sleep_gain_minutes": 60, "poop_minutes": 52}
+    if stage == "adult": return {"hunger_minutes": 26, "mood_minutes": 30, "sleep_gain_minutes": 60, "poop_minutes": 999999}
     return {"hunger_minutes": 9999, "mood_minutes": 9999, "sleep_gain_minutes": 9999, "poop_minutes": 9999}
 
 def personality_bonus(character_id, action):
@@ -209,7 +228,7 @@ def evolve_if_needed(user_id, row):
         elif cid == "baby_colon": next_id, next_stage = "baby_cororon", "baby2"
         elif cid == "baby_cororon": next_id, next_stage = "child_musubi", "child"
         else: next_id, next_stage = finalize_adult(choose_normal_adult(row)), "adult"
-        database.update_pet(user_id, character_id=next_id, stage=next_stage, stage_entered_at=now, evolution_warned=0)
+        database.update_pet(user_id, character_id=next_id, stage=next_stage, stage_entered_at=now, evolution_warned=0, poop=0 if next_stage == "adult" else row.get("poop",0), call_flag=0 if next_stage == "adult" and row.get("call_reason")=="poop" else row.get("call_flag",0), call_reason=None if next_stage == "adult" and row.get("call_reason")=="poop" else row.get("call_reason"))
         database.add_evolution_log(user_id, cid, next_id)
         messages.append(f"✨ **{CHARACTERS[cid]['name']}** は **{CHARACTERS[next_id]['name']}** に進化した！")
     elif row["stage"] == "adult":
@@ -273,14 +292,14 @@ def update_over_time(user_id, row):
     hunger_loss = int(minutes/profile["hunger_minutes"]) if not is_sleeping else max(0, int(minutes/(profile["hunger_minutes"]*3.0)))
     mood_loss = int(minutes/profile["mood_minutes"]) if not is_sleeping else 0
     sleep_gain = 0 if is_sleeping else int(minutes/profile["sleep_gain_minutes"])
-    poop_gain = int(minutes/profile["poop_minutes"]) if not is_sleeping else max(0,int(minutes/(profile["poop_minutes"]*2.5)))
+    poop_gain = (int(minutes/profile["poop_minutes"]) if not is_sleeping else max(0,int(minutes/(profile["poop_minutes"]*2.5)))) if poop_enabled(row) else 0
     hunger=clamp_meter(row["hunger"]-hunger_loss); mood=clamp_meter(row["mood"]-mood_loss)
     sleepiness = clamp(row["sleepiness"] + sleep_gain if not is_sleeping else max(0, row["sleepiness"] - int(minutes*1.5)))
-    poop=min(3, row["poop"]+poop_gain)
+    poop=min(3, row["poop"]+poop_gain) if poop_enabled(row) else 0
     stress=row["stress"]
     if hunger <= 1: stress += 8
     if mood <= 1: stress += 8
-    if poop >= 1: stress += 10
+    if poop_enabled(row) and poop >= 1: stress += 10
     if sleepiness >= 80 and not is_sleeping: stress += 6
     if is_sleeping and not lights_off: stress += 10
     stress=clamp(stress)
@@ -289,7 +308,7 @@ def update_over_time(user_id, row):
     is_sick=row["is_sick"]; sickness_count=row["sickness_count"]
     if not is_sick:
         sick_risk = 0
-        if poop >= 2: sick_risk += 20
+        if poop_enabled(row) and poop >= 2: sick_risk += 20
         if stress >= 70: sick_risk += 20
         if hunger == 0: sick_risk += 20
         if row["care_miss_count"] >= 3: sick_risk += 10
@@ -426,10 +445,13 @@ def perform_action(user_id, row, action):
             )
             result="✨ いまは ほめるタイミングじゃないみたい。"
     elif action=="clean":
-        bonus=personality_bonus(row["character_id"],"clean")
-        database.update_pet(user_id, poop=0, stress=clamp(row["stress"]-12+bonus.get("stress",0)), total_clean_count=row["total_clean_count"]+1,
-            call_flag=0 if row["call_reason"]=="poop" else row["call_flag"], call_reason=None if row["call_reason"]=="poop" else row["call_reason"], last_access_at=now)
-        result="🧹 うんちをきれいにした！"
+        if not poop_enabled(row):
+            result="🧹 いまはおそうじしなくてだいじょうぶ。"
+        else:
+            bonus=personality_bonus(row["character_id"],"clean")
+            database.update_pet(user_id, poop=0, stress=clamp(row["stress"]-12+bonus.get("stress",0)), total_clean_count=row["total_clean_count"]+1,
+                call_flag=0 if row["call_reason"]=="poop" else row["call_flag"], call_reason=None if row["call_reason"]=="poop" else row["call_reason"], last_access_at=now)
+            result="🧹 うんちをきれいにした！"
     elif action=="medicine":
         if row["is_sick"]:
             cured=1 if random.randint(1,100)<=85 else 0

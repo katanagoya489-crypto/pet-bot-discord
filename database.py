@@ -176,6 +176,17 @@ def delete_pet(user_id: int):
     conn.close()
 
 
+
+
+def delete_all_user_data(user_id: int):
+    conn = get_conn()
+    uid = str(user_id)
+    conn.execute("DELETE FROM pets WHERE user_id = ?", (uid,))
+    conn.execute("DELETE FROM collection WHERE user_id = ?", (uid,))
+    conn.execute("DELETE FROM evolution_logs WHERE user_id = ?", (uid,))
+    conn.execute("DELETE FROM settings WHERE user_id = ?", (uid,))
+    conn.commit()
+
 def save_collection(user_id: int, character_id: str):
     conn = get_conn()
     conn.execute("INSERT OR IGNORE INTO collection (user_id, character_id, obtained_at) VALUES (?, ?, ?)", (str(user_id), character_id, int(time.time())))
