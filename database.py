@@ -102,11 +102,15 @@ def init_db():
             conn.commit()
     conn.close()
 
+def _row_to_dict(row):
+    return dict(row) if row is not None else None
+
+
 def fetch_pet(user_id: int):
     conn = get_conn()
     row = conn.execute("SELECT * FROM pets WHERE user_id = ?", (str(user_id),)).fetchone()
     conn.close()
-    return dict(row) if row else None
+    return _row_to_dict(row)
 
 def create_pet(user_id: int, guild_id: int, thread_id: int):
     now = int(time.time())
@@ -159,7 +163,7 @@ def fetch_collection(user_id: int):
     conn = get_conn()
     rows = conn.execute("SELECT * FROM collection WHERE user_id = ? ORDER BY obtained_at ASC", (str(user_id),)).fetchall()
     conn.close()
-    return rows
+    return [dict(r) for r in rows]
 
 def add_evolution_log(user_id: int, from_character_id: str, to_character_id: str):
     conn = get_conn()
@@ -180,13 +184,30 @@ def fetch_sleep_setting(user_id: int):
     conn = get_conn()
     row = conn.execute("SELECT * FROM settings WHERE user_id = ?", (str(user_id),)).fetchone()
     conn.close()
-    return dict(row) if row else None
+    return _row_to_dict(row)
 
 def get_meta(key: str):
     conn = get_conn()
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     conn.close()
     return row["value"] if row else None
+
+
+def delete_collection(user_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM collection WHERE user_id = ?", (str(user_id),))
+    conn.commit()
+    conn.close()
+
+
+def reset_user_all(user_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM pets WHERE user_id = ?", (str(user_id),))
+    conn.execute("DELETE FROM collection WHERE user_id = ?", (str(user_id),))
+    conn.execute("DELETE FROM evolution_log WHERE user_id = ?", (str(user_id),))
+    conn.execute("DELETE FROM settings WHERE user_id = ?", (str(user_id),))
+    conn.commit()
+    conn.close()
 
 def set_meta(key: str, value: str):
     conn = get_conn()

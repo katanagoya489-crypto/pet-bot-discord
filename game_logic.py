@@ -25,11 +25,6 @@ def effective_stage(row):
     info = CHARACTERS.get(cid, {})
     return info.get("stage") or safe_get(row, "stage") or "egg"
 def poop_enabled(row): return effective_stage(row) != "adult"
-
-def debug_visible_label(row):
-    stage = effective_stage(row)
-    poop = "OFF" if not poop_enabled(row) else "ON"
-    return f"版：V6 / 段階:{stage} / うんち:{poop}"
 def pet_name(row): return CHARACTERS[row["character_id"]]["name"]
 def bar(v:int, m:int=4, full="♥", empty="♡"): return full*v + empty*(m-v)
 def age_days(row): return max(0, (int(time.time())-row["birth_at"])//(24*60*60))
@@ -71,17 +66,70 @@ def maybe_start_good_behavior_event(user_id, row, now):
     if good_state and random.randint(1, 100) <= 6:
         database.update_pet(user_id, good_behavior_pending=1, good_behavior_due_at=now)
 
-def image_key_for_pet(row, transient=None):
+def asset_base_name(row):
+    info = CHARACTERS.get(row["character_id"], {})
+    return info.get("asset_base") or info.get("name") or pet_name(row)
+
+
+def _state_alias_keys(kind: str) -> list[str]:
+    from game_data import IMAGE_STATE_ALIASES
+    return IMAGE_STATE_ALIASES.get(kind, [])
+
+
+def image_keys_for_pet(row, transient=None):
     name = pet_name(row)
-    if row["character_id"] == "egg_yuiran": return "卵割れる" if transient == "hatch" else "卵"
-    if transient == "feed": return f"{name}_ごはん"
-    if transient == "snack": return f"{name}_おやつ"
-    if row["is_sick"]: return f"{name}_病気"
-    if poop_enabled(row) and row["poop"] >= 1: return f"{name}_ウンチ"
-    if row["is_sleeping"] or row["sleepiness"] >= 80: return f"{name}_眠い"
-    if row["mood"] <= 1: return f"{name}_怒り"
-    if row["mood"] >= 4: return f"{name}_喜び"
-    return f"{name}_通常"
+    base = asset_base_name(row)
+    keys: list[str] = []
+
+    def add(candidate: str | None):
+        if candidate and candidate not in keys:
+            keys.append(candidate)
+
+    def add_prefixed(prefix: str, aliases: list[str]):
+        for alias in aliases:
+            add(f"{prefix}_{alias}")
+            add(f"{prefix}{alias}")
+
+    if row["character_id"] == "egg_yuiran":
+        if transient == "hatch":
+            add_prefixed(base, _state_alias_keys("hatch"))
+            for alias in _state_alias_keys("hatch"):
+                add(alias)
+        else:
+            add_prefixed(base, _state_alias_keys("egg"))
+            add_prefixed(base, _state_alias_keys("normal"))
+            for alias in _state_alias_keys("egg"):
+                add(alias)
+        return keys
+
+    state_kind = "normal"
+    if transient == "feed":
+        state_kind = "feed"
+    elif transient == "snack":
+        state_kind = "snack"
+    elif row["is_sick"]:
+        state_kind = "sick"
+    elif poop_enabled(row) and row["poop"] >= 1:
+        state_kind = "poop"
+    elif row["is_sleeping"] or row["sleepiness"] >= 80:
+        state_kind = "sleepy"
+    elif row["mood"] <= 1:
+        state_kind = "angry"
+    elif row["mood"] >= 4:
+        state_kind = "happy"
+
+    for prefix in [base, name]:
+        add_prefixed(prefix, _state_alias_keys(state_kind))
+        if state_kind != "normal":
+            add_prefixed(prefix, _state_alias_keys("normal"))
+        add(prefix)
+    return keys
+
+
+def image_key_for_pet(row, transient=None):
+    keys = image_keys_for_pet(row, transient=transient)
+    return keys[0] if keys else f"{asset_base_name(row)}_通常"
+
 
 def status_lines(row):
     health = "😷 病気" if row["is_sick"] else "🙂 元気"
@@ -93,7 +141,6 @@ def status_lines(row):
     egg_note = "\n\n🥚 まだ卵の状態。孵化するまでは見守ってね。" if is_egg(row) else ""
     lines = [
         f"**{pet_name(row)}**",
-        debug_visible_label(row),
         "",
         f"おなか　 {bar(row['hunger'])}",
         f"ごきげん {bar(row['mood'])}",
@@ -123,7 +170,6 @@ def build_check_text(row):
     sleeping = "ねている" if row["is_sleeping"] else "おきている"
     lines = [
         "【チェック】",
-        debug_visible_label(row),
         "",
         f"名前：{pet_name(row)}",
         f"年齢：{age_days(row)}さい",
