@@ -314,7 +314,10 @@ def evolve_if_needed(user_id: int, row):
             next_id, next_stage = "child_musubi", "child"
         else:
             next_id, next_stage = finalize_adult(choose_normal_adult(row)), "adult"
-        database.update_pet(user_id, character_id=next_id, stage=next_stage, stage_entered_at=now, evolution_warned=0)
+        evolve_updates = {"character_id": next_id, "stage": next_stage, "stage_entered_at": now, "evolution_warned": 0}
+        if next_stage == "adult":
+            evolve_updates.update({"poop": 0, "call_flag": 0 if row.get("call_reason") == "poop" else row.get("call_flag", 0), "call_reason": None if row.get("call_reason") == "poop" else row.get("call_reason")})
+        database.update_pet(user_id, **evolve_updates)
         database.add_evolution_log(user_id, cid, next_id)
         messages.append(f"✨ **{CHARACTERS[cid]['name']}** は **{CHARACTERS[next_id]['name']}** に進化した！")
         return messages
@@ -349,7 +352,8 @@ def whim_check(row, now: int):
         return 0, None, row["last_whim_at"]
     if row["call_flag"]:
         return row["is_whim_call"], row["call_reason"], row["last_whim_at"]
-    essentials_ok = row["hunger"] >= 3 and row["mood"] >= 3 and row["poop"] == 0 and row["is_sick"] == 0 and row["sleepiness"] < 80
+    poop_ok = (not poop_feature_enabled(row)) or row["poop"] == 0
+    essentials_ok = row["hunger"] >= 3 and row["mood"] >= 3 and poop_ok and row["is_sick"] == 0 and row["sleepiness"] < 80
     if essentials_ok and now - row["last_whim_at"] >= 40 * 60 and random.randint(1, 100) <= 25:
         return 1, "whim", now
     return 0, None, row["last_whim_at"]
