@@ -106,7 +106,7 @@ def fetch_pet(user_id: int):
     conn = get_conn()
     row = conn.execute("SELECT * FROM pets WHERE user_id = ?", (str(user_id),)).fetchone()
     conn.close()
-    return row
+    return dict(row) if row else None
 
 def create_pet(user_id: int, guild_id: int, thread_id: int):
     now = int(time.time())
@@ -180,7 +180,7 @@ def fetch_sleep_setting(user_id: int):
     conn = get_conn()
     row = conn.execute("SELECT * FROM settings WHERE user_id = ?", (str(user_id),)).fetchone()
     conn.close()
-    return row
+    return dict(row) if row else None
 
 def get_meta(key: str):
     conn = get_conn()

@@ -13,7 +13,7 @@ intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 WELCOME_MARKER = "○○っちへようこそ！"
 TEMP_MESSAGE_SECONDS = 8
-BOT_VERSION = "no-poop-v3"
+BOT_VERSION = "no-poop-v4"
 
 def is_owner(interaction: discord.Interaction, owner_id: int) -> bool:
     return interaction.user.id == owner_id
@@ -109,7 +109,7 @@ def remind_due(row, now:int):
     last = row["last_call_notified_at"] or 0
     if last == 0:
         return True
-    stage = row.get("call_stage", 1)
+    stage = row.get("call_stage", 1) if hasattr(row, "get") else 1
     interval = 18 * 60 if stage <= 1 else 12 * 60 if stage == 2 else 7 * 60
     return now - last >= interval
 
@@ -235,7 +235,15 @@ class MainPanelView(discord.ui.View):
         await send_temp_interaction_message(interaction, "【あそびかた】\n・呼出しログは注意アイコンのかわりだよ\n・ようすでチェックメーターが見られる\n・でんきで眠る準備ができる\n・わがままサインが出たらしつけのチャンス\n・キラキラした時は ほめる のチャンス", seconds=20)
 
 class PetView(discord.ui.View):
-    def __init__(self, owner_id:int): super().__init__(timeout=None); self.owner_id=owner_id
+    def __init__(self, owner_id:int):
+        super().__init__(timeout=None)
+        self.owner_id=owner_id
+        row = database.fetch_pet(owner_id)
+        if row and not game_logic.poop_enabled(row):
+            try:
+                self.remove_item(self.clean)
+            except Exception:
+                pass
     async def _owner_check(self, interaction):
         if not is_owner(interaction, self.owner_id):
             await send_temp_interaction_message(interaction, "この子のお世話は本人だけができるよ。"); return False
