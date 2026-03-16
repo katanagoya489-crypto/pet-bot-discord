@@ -1,21 +1,21 @@
 from __future__ import annotations
 
 CHARACTERS = {
-    "egg_yuiran": {"name": "結卵", "asset_base": "結卵", "asset_aliases": ["卵", "たまご"], "stage": "egg", "profile": "結びの力を秘めたふしぎなたまご。", "secret": False},
-    "baby_colon": {"name": "コロン", "asset_base": "コロン", "asset_aliases": [], "stage": "baby1", "profile": "ころんと生まれた小さな命。", "secret": False},
-    "baby_cororon": {"name": "コロロン", "asset_base": "コロロン", "asset_aliases": [], "stage": "baby2", "profile": "少しずつ感情が豊かになってきた。", "secret": False},
-    "child_musubi": {"name": "ムスビー", "asset_base": "ムスビー", "asset_aliases": [], "stage": "child", "profile": "いろんな個性に育っていく結びの子。", "secret": False},
-    "adult_sarii": {"name": "鳳凰院さりぃ", "asset_base": "鳳凰院さりぃ", "asset_aliases": [], "stage": "adult", "profile": "しつけが伸びやすく、優等生寄りに育つ。", "secret": False},
-    "adult_icecream": {"name": "あいすくりむ", "asset_base": "あいすくりむ", "asset_aliases": [], "stage": "adult", "profile": "おやつやごきげんと相性がよい。", "secret": False},
-    "adult_kou": {"name": "虹守コウ", "asset_base": "虹守コウ", "asset_aliases": [], "stage": "adult", "profile": "遊びの効果が高い。", "secret": False},
-    "adult_nazuna": {"name": "白雪なづな", "asset_base": "白雪なづな", "asset_aliases": [], "stage": "adult", "profile": "よく眠り、安定しやすい。", "secret": False},
-    "adult_kanato": {"name": "陽色かなと", "asset_base": "陽色かなと", "asset_aliases": [], "stage": "adult", "profile": "全体バランスが良い。", "secret": False},
-    "adult_saina": {"name": "煩流サイナ", "asset_base": "煩流サイナ", "asset_aliases": [], "stage": "adult", "profile": "ミニゲームと相性が良い。", "secret": False},
-    "adult_akira": {"name": "橙ノあきら", "asset_base": "橙ノあきら", "asset_aliases": [], "stage": "adult", "profile": "ごはんで元気になりやすい。", "secret": False},
-    "adult_owl": {"name": "オウル・ノーグ", "asset_base": "オウル・ノーグ", "asset_aliases": [], "stage": "adult", "profile": "夜型。夜の活動で個性が出る。", "secret": False},
-    "adult_ichiru": {"name": "海寧いちる", "asset_base": "海寧いちる", "asset_aliases": [], "stage": "adult", "profile": "ストレスを低く保つと会いやすい。", "secret": False},
-    "secret_baaya": {"name": "ばあや", "asset_base": "ばあや", "asset_aliases": [], "stage": "adult", "profile": "さりぃルートからごく稀に現れる。", "secret": True},
-    "secret_gugu": {"name": "百瀬ぐぐ", "asset_base": "百瀬ぐぐ", "asset_aliases": [], "stage": "adult", "profile": "すべてのルートに潜む超低確率進化。", "secret": True},
+    "egg_yuiran": {"name": "結卵", "stage": "egg", "profile": "結びの力を秘めたふしぎなたまご。", "secret": False},
+    "baby_colon": {"name": "コロン", "stage": "baby1", "profile": "ころんと生まれた小さな命。", "secret": False},
+    "baby_cororon": {"name": "コロロン", "stage": "baby2", "profile": "少しずつ感情が豊かになってきた。", "secret": False},
+    "child_musubi": {"name": "ムスビー", "stage": "child", "profile": "いろんな個性に育っていく結びの子。", "secret": False},
+    "adult_sarii": {"name": "鳳凰院さりぃ", "stage": "adult", "profile": "しつけが伸びやすく、優等生寄りに育つ。", "secret": False},
+    "adult_icecream": {"name": "あいすくりむ", "stage": "adult", "profile": "おやつやごきげんと相性がよい。", "secret": False},
+    "adult_kou": {"name": "虹守コウ", "stage": "adult", "profile": "遊びの効果が高い。", "secret": False},
+    "adult_nazuna": {"name": "白雪なづな", "stage": "adult", "profile": "よく眠り、安定しやすい。", "secret": False},
+    "adult_kanato": {"name": "陽色かなと", "stage": "adult", "profile": "全体バランスが良い。", "secret": False},
+    "adult_saina": {"name": "煩流サイナ", "stage": "adult", "profile": "ミニゲームと相性が良い。", "secret": False},
+    "adult_akira": {"name": "橙ノあきら", "stage": "adult", "profile": "ごはんで元気になりやすい。", "secret": False},
+    "adult_owl": {"name": "オウル・ノーグ", "stage": "adult", "profile": "夜型。夜の活動で個性が出る。", "secret": False},
+    "adult_ichiru": {"name": "海寧いちる", "stage": "adult", "profile": "ストレスを低く保つと会いやすい。", "secret": False},
+    "secret_baaya": {"name": "ばあや", "stage": "adult", "profile": "さりぃルートからごく稀に現れる。", "secret": True},
+    "secret_gugu": {"name": "百瀬ぐぐ", "stage": "adult", "profile": "すべてのルートに潜む超低確率進化。", "secret": True},
 }
 
 DEX_TARGETS = [
@@ -57,17 +57,3 @@ MUSIC_GAMES = {
     "instrument": {"title": "音あて", "question": "メロディをささえることが多いのはどれ？", "choices": ["ドラム", "ピアノ", "ギター"], "answer": 1},
     "melody": {"title": "メロディ記憶", "question": "『ド レ ミ』とおなじならびはどれ？", "choices": ["ドレミ", "レミド", "ドミレ"], "answer": 0},
 }
-
-STATE_IMAGE_ALIASES = {
-    "normal": ["通常", "ノーマル"],
-    "feed": ["ごはん", "ご飯"],
-    "snack": ["おやつ"],
-    "sleep": ["眠い", "ねむい", "睡眠"],
-    "sick": ["病気", "びょうき"],
-    "angry": ["怒り", "いかり"],
-    "happy": ["喜び", "うれしい"],
-    "poop": ["ウンチ", "うんち"],
-    "letter": ["手紙"],
-}
-
-EGG_IMAGE_KEYS = ["卵", "たまご", "結卵", "結卵_通常", "egg_yuiran"]
