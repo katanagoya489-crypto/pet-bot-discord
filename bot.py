@@ -12,7 +12,7 @@ intents.members = True
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 WELCOME_MARKER = "○○っちへようこそ！"
-BOT_VERSION = "V7.5-character-odekake-time"
+BOT_VERSION = "V7.6-clean-assets"
 TEMP_MESSAGE_SECONDS = 8
 
 def is_owner(interaction: discord.Interaction, owner_id: int) -> bool:
@@ -36,18 +36,28 @@ async def send_temp_interaction_message(interaction, content=None, *, embed=None
 
 async def build_embed(row, transient=None):
     embed = discord.Embed(description=game_logic.status_lines(row))
-    key = game_logic.image_key_for_pet(row, transient=transient)
-    url = await image_service.get_image_url(bot, key)
-    if url: embed.set_image(url=url)
+    for key in game_logic.image_keys_for_pet(row, transient=transient):
+        try:
+            url = await image_service.get_image_url(bot, key)
+        except Exception:
+            url = None
+        if url:
+            embed.set_image(url=url)
+            break
     return embed
 
 async def build_letter_embed(character_name: str):
-    key = f"{character_name}_手紙"
-    url = await image_service.get_image_url(bot, key)
-    if not url: return None
-    embed = discord.Embed(title=f"{character_name} から手紙が届いています…")
-    embed.set_image(url=url)
-    return embed
+    keys = [f"{character_name}_手紙", f"{character_name.replace('・', '')}_手紙"]
+    for key in keys:
+        try:
+            url = await image_service.get_image_url(bot, key)
+        except Exception:
+            url = None
+        if url:
+            embed = discord.Embed(title=f"{character_name} から手紙が届いています…")
+            embed.set_image(url=url)
+            return embed
+    return None
 
 async def upsert_system_log(thread: discord.Thread, user_id: int, text: str):
     row = database.fetch_pet(user_id)
