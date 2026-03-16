@@ -58,7 +58,6 @@ MUSIC_GAMES = {
     "melody": {"title": "メロディ記憶", "question": "『ド レ ミ』とおなじならびはどれ？", "choices": ["ドレミ", "レミド", "ドミレ"], "answer": 0},
 }
 
-
 STATE_IMAGE_ALIASES = {
     "normal": ["通常", "ノーマル"],
     "feed": ["ごはん", "ご飯"],
@@ -70,4 +69,5 @@ STATE_IMAGE_ALIASES = {
     "poop": ["ウンチ", "うんち"],
     "letter": ["手紙"],
 }
+
 EGG_IMAGE_KEYS = ["卵", "たまご", "結卵", "結卵_通常", "egg_yuiran"]
