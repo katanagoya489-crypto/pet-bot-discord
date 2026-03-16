@@ -30,6 +30,75 @@ def bar(v:int, m:int=4, full="♥", empty="♡"): return full*v + empty*(m-v)
 def age_days(row): return max(0, (int(time.time())-row["birth_at"])//(24*60*60))
 def current_time_label(): return now_jst().strftime("%H:%M")
 
+
+def safe_int(value, default=None):
+    try:
+        if value is None or value == "":
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def poop_enabled(row):
+    if not row:
+        return False
+    cid = row["character_id"] if "character_id" in row.keys() else row.get("character_id")
+    stage = CHARACTERS.get(cid, {}).get("stage")
+    return stage in {"egg", "baby1", "baby2", "child"}
+
+
+def can_resume_pet(row):
+    if not row:
+        return False
+    try:
+        if row["journeyed"]:
+            return False
+        cid = row["character_id"]
+        if cid not in CHARACTERS:
+            return False
+        # 主要な時刻が壊れていると復帰失敗しやすいのでここで弾く
+        for key in ("birth_at", "stage_entered_at", "last_access_at"):
+            if safe_int(row[key], None) is None:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def repair_pet_row(user_id, row):
+    if not row:
+        return None
+    if row["character_id"] not in CHARACTERS:
+        return None
+    now = int(time.time())
+    updates = {}
+    expected = CHARACTERS[row["character_id"]]["stage"]
+    if row["stage"] != expected:
+        updates["stage"] = expected
+    for key in ("birth_at", "stage_entered_at", "last_access_at"):
+        if safe_int(row[key], None) is None:
+            updates[key] = now
+    for key in ("thread_id", "panel_message_id", "system_message_id", "alert_message_id"):
+        val = row[key]
+        if val in (None, ""):
+            continue
+        if safe_int(val, None) is None:
+            updates[key] = None
+    if not poop_enabled(row) and row["poop"] != 0:
+        updates["poop"] = 0
+        if row["call_reason"] == "poop":
+            updates["call_flag"] = 0
+            updates["call_reason"] = None
+    if updates:
+        database.update_pet(user_id, **updates)
+        return database.fetch_pet(user_id)
+    return row
+
+
+def cleanup_broken_pet(user_id):
+    database.delete_pet(user_id)
+
 def call_stage_label(row):
     stage = row.get("call_stage", 0)
     if not row["call_flag"]:
@@ -60,7 +129,7 @@ def image_key_for_pet(row, transient=None):
     if transient == "feed": return f"{name}_ごはん"
     if transient == "snack": return f"{name}_おやつ"
     if row["is_sick"]: return f"{name}_病気"
-    if row["poop"] >= 1: return f"{name}_ウンチ"
+    if poop_enabled(row) and row["poop"] >= 1: return f"{name}_ウンチ"
     if row["is_sleeping"] or row["sleepiness"] >= 80: return f"{name}_眠い"
     if row["mood"] <= 1: return f"{name}_怒り"
     if row["mood"] >= 4: return f"{name}_喜び"
@@ -82,8 +151,7 @@ def status_lines(row):
 たいじゅう {row['weight']}g
 しつけ　 {row['discipline']}
 おせわミス {row['care_miss_count']}
-うんち　 {row['poop']}
-たいちょう {health}
+{('うんち　 ' + str(row['poop']) + "\n") if poop_enabled(row) else ''}たいちょう {health}
 いま　 {sleeping}
 状態 {call}{whim}\n{praise}\n{good}{egg_note}"""
 
@@ -103,8 +171,7 @@ def build_check_text(row):
 おせわミス {row['care_miss_count']}
 
 たいちょう：{health}
-うんち：{row['poop']}
-ねむけ：{clamp(row['sleepiness'])}%
+{('うんち：' + str(row['poop']) + "\n") if poop_enabled(row) else ''}ねむけ：{clamp(row['sleepiness'])}%
 でんき：{'OFF' if row['lights_off'] else 'ON'}
 状態：{sleeping}\n音：{sound_label(row)}\n注意：{'点灯中' if row['call_flag'] else '消灯'}\n呼出し段階：{call_stage_label(row)}"""
 
@@ -166,7 +233,10 @@ def evolve_if_needed(user_id, row):
         elif cid == "baby_colon": next_id, next_stage = "baby_cororon", "baby2"
         elif cid == "baby_cororon": next_id, next_stage = "child_musubi", "child"
         else: next_id, next_stage = finalize_adult(choose_normal_adult(row)), "adult"
-        database.update_pet(user_id, character_id=next_id, stage=next_stage, stage_entered_at=now, evolution_warned=0)
+        updates = {"character_id": next_id, "stage": next_stage, "stage_entered_at": now, "evolution_warned": 0}
+        if next_stage == "adult":
+            updates.update({"poop": 0, "call_flag": 0 if row.get("call_reason") == "poop" else row["call_flag"], "call_reason": None if row.get("call_reason") == "poop" else row["call_reason"]})
+        database.update_pet(user_id, **updates)
         database.add_evolution_log(user_id, cid, next_id)
         messages.append(f"✨ **{CHARACTERS[cid]['name']}** は **{CHARACTERS[next_id]['name']}** に進化した！")
     elif row["stage"] == "adult":
@@ -198,7 +268,7 @@ def whim_check(row, now):
 
 def determine_call_reason(row):
     if row["is_sick"]: return 1, "sick"
-    if row["poop"] >= 1: return 1, "poop"
+    if poop_enabled(row) and row["poop"] >= 1: return 1, "poop"
     if row["sleepiness"] >= 90 and not row["is_sleeping"]: return 1, "sleepy"
     if row["hunger"] <= 0: return 1, "hunger"
     if row["mood"] <= 0: return 1, "mood"
@@ -383,10 +453,13 @@ def perform_action(user_id, row, action):
             )
             result="✨ いまは ほめるタイミングじゃないみたい。"
     elif action=="clean":
-        bonus=personality_bonus(row["character_id"],"clean")
-        database.update_pet(user_id, poop=0, stress=clamp(row["stress"]-12+bonus.get("stress",0)), total_clean_count=row["total_clean_count"]+1,
-            call_flag=0 if row["call_reason"]=="poop" else row["call_flag"], call_reason=None if row["call_reason"]=="poop" else row["call_reason"], last_access_at=now)
-        result="🧹 うんちをきれいにした！"
+        if not poop_enabled(row):
+            result="🧹 いまはおそうじしなくて大丈夫みたい。"
+        else:
+            bonus=personality_bonus(row["character_id"],"clean")
+            database.update_pet(user_id, poop=0, stress=clamp(row["stress"]-12+bonus.get("stress",0)), total_clean_count=row["total_clean_count"]+1,
+                call_flag=0 if row["call_reason"]=="poop" else row["call_flag"], call_reason=None if row["call_reason"]=="poop" else row["call_reason"], last_access_at=now)
+            result="🧹 うんちをきれいにした！"
     elif action=="medicine":
         if row["is_sick"]:
             cured=1 if random.randint(1,100)<=85 else 0

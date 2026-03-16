@@ -14,17 +14,14 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 WELCOME_MARKER = "○○っちへようこそ！"
 TEMP_MESSAGE_SECONDS = 8
 
-def clear_broken_pet_record(user_id: int):
-    try:
-        database.delete_pet(user_id)
-    except Exception:
-        pass
 
-async def notify_broken_pet_reset(interaction):
-    await send_temp_interaction_message(
-        interaction,
-        "壊れた育成データを整理したよ。\nもう一度『育成開始』を押して始めてね。"
-    )
+def safe_int(value, default=None):
+    try:
+        if value is None or value == "":
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def is_owner(interaction: discord.Interaction, owner_id: int) -> bool:
@@ -194,10 +191,10 @@ class MainPanelView(discord.ui.View):
         if guild is None: return await send_temp_interaction_message(interaction, "サーバー内で使ってね。")
         row=database.fetch_pet(user.id)
         if row and not row["journeyed"]:
+            row = game_logic.repair_pet_row(user.id, row)
             if game_logic.can_resume_pet(row):
                 return await send_temp_interaction_message(interaction, "すでに育成中のデータがあるよ。『育成の続きから』を押して再開してね。")
-            clear_broken_pet_record(user.id)
-            row = None
+            game_logic.cleanup_broken_pet(user.id)
         channel=interaction.channel
         if not isinstance(channel, discord.TextChannel): return await send_temp_interaction_message(interaction, "テキストチャンネルで使ってね。")
         try:
@@ -214,15 +211,9 @@ class MainPanelView(discord.ui.View):
     async def continue_btn(self, interaction, button):
         user=interaction.user; guild=interaction.guild
         if guild is None: return await send_temp_interaction_message(interaction, "サーバー内で使ってね。")
-        try:
-            database.init_db(); row=database.fetch_pet(user.id)
-        except sqlite3.OperationalError as e:
-            return await send_temp_interaction_message(interaction, f"続きからの復帰に失敗したよ。\n`{type(e).__name__}`")
-        if not row or row["journeyed"]:
-            return await send_temp_interaction_message(interaction, "続きの育成データが見つからないよ。『育成開始』から始めてね。")
-        if not game_logic.can_resume_pet(row):
-            clear_broken_pet_record(user.id)
-            return await notify_broken_pet_reset(interaction)
+        try: database.init_db(); row=database.fetch_pet(user.id)
+        except sqlite3.OperationalError as e: return await send_temp_interaction_message(interaction, f"続きからの復帰に失敗したよ。\n`{type(e).__name__}`")
+        if not row or row["journeyed"]: return await send_temp_interaction_message(interaction, "続きの育成データが見つからないよ。『育成開始』から始めてね。")
         thread=None
         if row["thread_id"]:
             try: thread = bot.get_channel(int(row["thread_id"])) or await bot.fetch_channel(int(row["thread_id"]))
@@ -239,8 +230,9 @@ class MainPanelView(discord.ui.View):
                 await upsert_alert_log(new_thread, user.id, "○ 注意アイコン消灯\nいまはだいじょうぶ。\nまたようすをみてね。")
                 return await send_temp_interaction_message(interaction, f"育成データを復帰したよ！ {new_thread.mention}")
             panel_ok=False
-            if row["panel_message_id"]:
-                try: await thread.fetch_message(int(row["panel_message_id"])); panel_ok=True
+            pid = safe_int(row["panel_message_id"], None)
+            if pid:
+                try: await thread.fetch_message(pid); panel_ok=True
                 except Exception: panel_ok=False
             if not panel_ok:
                 embed=await build_embed(row); panel=await thread.send(f"{user.mention} の育成パネルを再作成したよ！", embed=embed, view=PetView(user.id))
@@ -248,9 +240,6 @@ class MainPanelView(discord.ui.View):
             if not row["alert_message_id"]: await upsert_alert_log(thread, user.id, "○ 注意アイコン消灯\nいまはだいじょうぶ。\nまたようすをみてね。")
             await send_temp_interaction_message(interaction, f"続きから再開できるよ！ {thread.mention}")
         except Exception as e:
-            if isinstance(e, (ValueError, TypeError, KeyError)):
-                clear_broken_pet_record(user.id)
-                return await notify_broken_pet_reset(interaction)
             await send_temp_interaction_message(interaction, f"続きからの復帰に失敗したよ。\n`{type(e).__name__}`")
     @discord.ui.button(label="図鑑", style=discord.ButtonStyle.gray, custom_id="main:dex")
     async def dex(self, interaction, button):
@@ -260,7 +249,14 @@ class MainPanelView(discord.ui.View):
         await send_temp_interaction_message(interaction, "【あそびかた】\n・呼出しログは注意アイコンのかわりだよ\n・ようすでチェックメーターが見られる\n・でんきで眠る準備ができる\n・わがままサインが出たらしつけのチャンス\n・キラキラした時は ほめる のチャンス", seconds=20)
 
 class PetView(discord.ui.View):
-    def __init__(self, owner_id:int): super().__init__(timeout=None); self.owner_id=owner_id
+    def __init__(self, owner_id:int):
+        super().__init__(timeout=None)
+        self.owner_id=owner_id
+        row = database.fetch_pet(owner_id)
+        if row and not game_logic.poop_enabled(row):
+            for item in list(self.children):
+                if getattr(item, "custom_id", None) == "pet:clean":
+                    self.remove_item(item)
     async def _owner_check(self, interaction):
         if not is_owner(interaction, self.owner_id):
             await send_temp_interaction_message(interaction, "この子のお世話は本人だけができるよ。"); return False
@@ -342,6 +338,27 @@ class SettingsView(discord.ui.View):
     async def sound_off(self, interaction, button):
         if interaction.user.id != self.owner_id: return await send_temp_interaction_message(interaction, "本人だけ変更できるよ。")
         database.update_pet(self.owner_id, sound_enabled=0); await send_temp_interaction_message(interaction, "音をOFFにしたよ。")
+    @discord.ui.button(label="データ整理", style=discord.ButtonStyle.red, row=3)
+    async def reset_tools(self, interaction, button):
+        if interaction.user.id != self.owner_id: return await send_temp_interaction_message(interaction, "本人だけ変更できるよ。")
+        await send_temp_interaction_message(interaction, "消したいデータを選んでね。", view=ResetDataView(self.owner_id), seconds=20)
+
+class ResetDataView(discord.ui.View):
+    def __init__(self, owner_id:int):
+        super().__init__(timeout=180)
+        self.owner_id=owner_id
+    @discord.ui.button(label="今の育成だけ消す", style=discord.ButtonStyle.red)
+    async def delete_pet_only(self, interaction, button):
+        if interaction.user.id != self.owner_id:
+            return await send_temp_interaction_message(interaction, "本人だけ変更できるよ。")
+        database.delete_pet(self.owner_id)
+        await send_temp_interaction_message(interaction, "今の育成データを消したよ。『育成開始』からやり直せるよ。", seconds=15)
+    @discord.ui.button(label="図鑑も全部消す", style=discord.ButtonStyle.red, row=1)
+    async def delete_all(self, interaction, button):
+        if interaction.user.id != self.owner_id:
+            return await send_temp_interaction_message(interaction, "本人だけ変更できるよ。")
+        database.delete_all_user_data(self.owner_id)
+        await send_temp_interaction_message(interaction, "育成データと図鑑を全部消したよ。『育成開始』からやり直せるよ。", seconds=15)
 
 class MiniGameMenuView(discord.ui.View):
     def __init__(self, owner_id:int): super().__init__(timeout=180); self.owner_id=owner_id

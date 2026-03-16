@@ -193,3 +193,20 @@ def set_meta(key: str, value: str):
     conn.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
     conn.commit()
     conn.close()
+
+
+def delete_collection(user_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM collection WHERE user_id = ?", (str(user_id),))
+    conn.commit()
+    conn.close()
+
+def delete_all_user_data(user_id: int):
+    conn = get_conn()
+    uid = str(user_id)
+    conn.execute("DELETE FROM pets WHERE user_id = ?", (uid,))
+    conn.execute("DELETE FROM collection WHERE user_id = ?", (uid,))
+    conn.execute("DELETE FROM settings WHERE user_id = ?", (uid,))
+    conn.execute("DELETE FROM evolution_log WHERE user_id = ?", (uid,))
+    conn.commit()
+    conn.close()
