@@ -25,6 +25,11 @@ def effective_stage(row):
     info = CHARACTERS.get(cid, {})
     return info.get("stage") or safe_get(row, "stage") or "egg"
 def poop_enabled(row): return effective_stage(row) != "adult"
+
+def debug_visible_label(row):
+    stage = effective_stage(row)
+    poop = "OFF" if not poop_enabled(row) else "ON"
+    return f"版：V6 / 段階:{stage} / うんち:{poop}"
 def pet_name(row): return CHARACTERS[row["character_id"]]["name"]
 def bar(v:int, m:int=4, full="♥", empty="♡"): return full*v + empty*(m-v)
 def age_days(row): return max(0, (int(time.time())-row["birth_at"])//(24*60*60))
@@ -88,6 +93,7 @@ def status_lines(row):
     egg_note = "\n\n🥚 まだ卵の状態。孵化するまでは見守ってね。" if is_egg(row) else ""
     lines = [
         f"**{pet_name(row)}**",
+        debug_visible_label(row),
         "",
         f"おなか　 {bar(row['hunger'])}",
         f"ごきげん {bar(row['mood'])}",
@@ -117,6 +123,7 @@ def build_check_text(row):
     sleeping = "ねている" if row["is_sleeping"] else "おきている"
     lines = [
         "【チェック】",
+        debug_visible_label(row),
         "",
         f"名前：{pet_name(row)}",
         f"年齢：{age_days(row)}さい",

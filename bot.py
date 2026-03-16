@@ -13,7 +13,7 @@ intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 WELCOME_MARKER = "○○っちへようこそ！"
 TEMP_MESSAGE_SECONDS = 8
-BOT_VERSION = "no-poop-v5-stage-sync"
+BOT_VERSION = "V6-visible-debug"
 
 def is_owner(interaction: discord.Interaction, owner_id: int) -> bool:
     return interaction.user.id == owner_id
@@ -385,7 +385,7 @@ class DexNavButton(discord.ui.Button):
 
 @bot.event
 async def on_ready():
-    database.init_db(); bot.add_view(MainPanelView()); print(f"Logged in as {bot.user} / version={BOT_VERSION}")
+    database.init_db(); bot.add_view(MainPanelView()); print(f"Logged in as {bot.user} / version={BOT_VERSION}", flush=True)
     bot.loop.create_task(ensure_main_panel()); bot.loop.create_task(auto_tick_loop())
 
 @bot.command()
