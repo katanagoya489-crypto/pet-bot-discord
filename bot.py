@@ -12,32 +12,45 @@ intents.members = True
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 WELCOME_MARKER = "○○っちへようこそ！"
+BOT_VERSION = "rebuild-stable-v1"
 TEMP_MESSAGE_SECONDS = 8
 
 def is_owner(interaction: discord.Interaction, owner_id: int) -> bool:
     return interaction.user.id == owner_id
 
 async def send_temp_interaction_message(interaction, content=None, *, embed=None, view=None, ephemeral=True, seconds=TEMP_MESSAGE_SECONDS):
-    send_kwargs={"content":content,"embed":embed,"ephemeral":ephemeral}
-    if view is not None: send_kwargs["view"]=view
-    if not interaction.response.is_done():
-        await interaction.response.send_message(**send_kwargs)
-        await asyncio.sleep(seconds)
-        try: await interaction.delete_original_response()
-        except Exception: pass
-    else:
-        try:
+    send_kwargs = {"content": content, "embed": embed, "ephemeral": ephemeral}
+    if view is not None:
+        send_kwargs["view"] = view
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(**send_kwargs)
+            if seconds:
+                await asyncio.sleep(seconds)
+                try:
+                    await interaction.delete_original_response()
+                except Exception:
+                    pass
+        else:
             msg = await interaction.followup.send(wait=True, **send_kwargs)
-            await asyncio.sleep(seconds)
-            try: await msg.delete()
-            except Exception: pass
-        except Exception: pass
+            if seconds:
+                await asyncio.sleep(seconds)
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+    except (discord.NotFound, discord.HTTPException):
+        return
 
 async def build_embed(row, transient=None):
     embed = discord.Embed(description=game_logic.status_lines(row))
-    key = game_logic.image_key_for_pet(row, transient=transient)
-    url = await image_service.get_image_url(bot, key)
-    if url: embed.set_image(url=url)
+    url = None
+    for key in game_logic.image_keys_for_pet(row, transient=transient):
+        url = await image_service.get_image_url(bot, key)
+        if url:
+            break
+    if url:
+        embed.set_image(url=url)
     return embed
 
 async def build_letter_embed(character_name: str):
@@ -218,7 +231,8 @@ class MainPanelView(discord.ui.View):
         if guild is None: return await send_temp_interaction_message(interaction, "サーバー内で使ってね。")
         try: database.init_db(); row=database.fetch_pet(user.id)
         except sqlite3.OperationalError as e: return await send_temp_interaction_message(interaction, f"続きからの復帰に失敗したよ。\n`{type(e).__name__}`")
-        if not row or row["journeyed"]: return await send_temp_interaction_message(interaction, "続きの育成データが見つからないよ。『育成開始』から始めてね。")
+        if not row or row["journeyed"]:
+            return await send_temp_interaction_message(interaction, "続きの育成データが見つからないよ。『育成開始』から始めてね。", seconds=12)
         thread=None
         if row["thread_id"]:
             try: thread = bot.get_channel(int(row["thread_id"])) or await bot.fetch_channel(int(row["thread_id"]))
@@ -253,7 +267,17 @@ class MainPanelView(discord.ui.View):
         await send_temp_interaction_message(interaction, "【あそびかた】\n・呼出しログは注意アイコンのかわりだよ\n・ようすでチェックメーターが見られる\n・でんきで眠る準備ができる\n・わがままサインが出たらしつけのチャンス\n・キラキラした時は ほめる のチャンス", seconds=20)
 
 class PetView(discord.ui.View):
-    def __init__(self, owner_id:int): super().__init__(timeout=None); self.owner_id=owner_id
+    def __init__(self, owner_id:int):
+        super().__init__(timeout=None)
+        self.owner_id=owner_id
+        try:
+            row = database.fetch_pet(owner_id)
+            if row and hasattr(game_logic, "poop_enabled") and (not game_logic.poop_enabled(row)):
+                for item in list(self.children):
+                    if getattr(item, "custom_id", "") == "pet:clean":
+                        self.remove_item(item)
+        except Exception:
+            pass
     async def _owner_check(self, interaction):
         if not is_owner(interaction, self.owner_id):
             await send_temp_interaction_message(interaction, "この子のお世話は本人だけができるよ。"); return False
@@ -302,7 +326,31 @@ class PetView(discord.ui.View):
         row=database.fetch_pet(self.owner_id); _, err = game_logic.start_minigame(self.owner_id, row, "rhythm")
         if err: return await send_temp_interaction_message(interaction, err)
         await send_temp_interaction_message(interaction, "あそぶ音楽ゲームを選んでね。", view=MiniGameMenuView(self.owner_id), seconds=15)
-    @discord.ui.button(label="設定", style=discord.ButtonStyle.gray, row=3, custom_id="pet:settings")
+
+    @discord.ui.button(label="おるすばん開始", style=discord.ButtonStyle.blurple, row=4, custom_id="pet:odekake_start")
+    async def odekake_start(self, interaction, button):
+        if not await self._owner_check(interaction): return
+        row=database.fetch_pet(self.owner_id)
+        row, result = game_logic.start_odekake(self.owner_id, row)
+        await interaction.response.defer()
+        await refresh_panel_for_user(self.owner_id, prefix=result)
+        if isinstance(interaction.channel, discord.Thread):
+            latest_row=database.fetch_pet(self.owner_id)
+            await upsert_alert_log(interaction.channel, self.owner_id, compose_result_alert("🏠 おるすばん", result, latest_row, self.owner_id))
+
+    @discord.ui.button(label="おるすばん終了", style=discord.ButtonStyle.blurple, row=5, custom_id="pet:odekake_end")
+    async def odekake_end(self, interaction, button):
+        if not await self._owner_check(interaction): return
+        row=database.fetch_pet(self.owner_id)
+        row, result, extra = game_logic.stop_odekake(self.owner_id, row)
+        await interaction.response.defer()
+        await refresh_panel_for_user(self.owner_id, prefix=result)
+        if isinstance(interaction.channel, discord.Thread):
+            latest_row=database.fetch_pet(self.owner_id)
+            body = compose_result_alert("🏠 おるすばん", result + ("\n" + "\n".join(extra) if extra else ""), latest_row, self.owner_id)
+            await upsert_alert_log(interaction.channel, self.owner_id, body)
+
+    @discord.ui.button(label="設定", style=discord.ButtonStyle.gray, row=5, custom_id="pet:settings")
     async def settings(self, interaction, button):
         if not await self._owner_check(interaction): return
         row=database.fetch_pet(self.owner_id)
@@ -432,6 +480,38 @@ class SettingsView(discord.ui.View):
         await interaction.response.send_modal(SleepWindowModal(self.owner_id))
 
 
+
+
+    @discord.ui.button(label="データ整理", style=discord.ButtonStyle.red, row=5)
+    async def data_cleanup(self, interaction, button):
+        if not await self._owner_only(interaction): return
+        await send_temp_interaction_message(interaction, "消したい内容を選んでね。", view=CleanupMenuView(self.owner_id), seconds=30)
+
+
+class CleanupMenuView(discord.ui.View):
+    def __init__(self, owner_id:int):
+        super().__init__(timeout=180)
+        self.owner_id = owner_id
+
+    async def _owner_only(self, interaction):
+        if interaction.user.id != self.owner_id:
+            await send_temp_interaction_message(interaction, "本人だけ変更できるよ。")
+            return False
+        return True
+
+    @discord.ui.button(label="今の育成だけ消す", style=discord.ButtonStyle.red)
+    async def delete_pet_only(self, interaction, button):
+        if not await self._owner_only(interaction): return
+        database.delete_pet(self.owner_id)
+        await send_temp_interaction_message(interaction, "今の育成データだけ消したよ。\n『育成開始』から新しく始められるよ。", seconds=20)
+
+    @discord.ui.button(label="図鑑も全部消す", style=discord.ButtonStyle.red)
+    async def delete_all(self, interaction, button):
+        if not await self._owner_only(interaction): return
+        database.delete_all_user_data(self.owner_id)
+        await send_temp_interaction_message(interaction, "育成データと図鑑を全部消したよ。\n最初からやり直せるよ。", seconds=20)
+
+
 class MiniGameMenuView(discord.ui.View):
     def __init__(self, owner_id:int): super().__init__(timeout=180); self.owner_id=owner_id
     async def send_game(self, interaction, key:str):
@@ -489,9 +569,19 @@ class DexNavButton(discord.ui.Button):
         if interaction.user.id != self.owner_id: return await send_temp_interaction_message(interaction, "これはあなたの図鑑表示だよ。")
         await interaction.response.edit_message(content=game_logic.build_dex_text(self.owner_id), view=DexView(self.owner_id, self.page))
 
+
+
+@bot.command(name="image_keys")
+async def image_keys_cmd(ctx):
+    row = database.fetch_pet(ctx.author.id)
+    if not row:
+        return await ctx.reply("育成データがないよ。")
+    keys = game_logic.image_keys_for_debug(row)
+    await ctx.reply("いま探しにいく画像名:\n" + "\n".join(f"- {k}" for k in keys))
+
 @bot.event
 async def on_ready():
-    database.init_db(); bot.add_view(MainPanelView()); print(f"Logged in as {bot.user}")
+    database.init_db(); bot.add_view(MainPanelView()); print(f"Logged in as {bot.user} / version={BOT_VERSION}")
     bot.loop.create_task(ensure_main_panel()); bot.loop.create_task(auto_tick_loop())
 
 @bot.command()
