@@ -13,7 +13,7 @@ intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 WELCOME_MARKER = "○○っちへようこそ！"
 TEMP_MESSAGE_SECONDS = 8
-BOT_VERSION = "no-poop-v4"
+BOT_VERSION = "no-poop-v5-stage-sync"
 
 def is_owner(interaction: discord.Interaction, owner_id: int) -> bool:
     return interaction.user.id == owner_id

@@ -20,7 +20,11 @@ def is_in_sleep_window(now_ts:int, start_str:str|None=None, end_str:str|None=Non
     return current >= start or current < end
 
 def is_egg(row): return row["character_id"] == "egg_yuiran"
-def poop_enabled(row): return row.get("stage") != "adult"
+def effective_stage(row):
+    cid = safe_get(row, "character_id")
+    info = CHARACTERS.get(cid, {})
+    return info.get("stage") or safe_get(row, "stage") or "egg"
+def poop_enabled(row): return effective_stage(row) != "adult"
 def pet_name(row): return CHARACTERS[row["character_id"]]["name"]
 def bar(v:int, m:int=4, full="♥", empty="♡"): return full*v + empty*(m-v)
 def age_days(row): return max(0, (int(time.time())-row["birth_at"])//(24*60*60))
@@ -140,7 +144,7 @@ def build_check_text(row):
 
 
 def get_decay_profile(row):
-    stage = row["stage"]
+    stage = effective_stage(row)
     if stage == "baby1": return {"hunger_minutes": 22, "mood_minutes": 26, "sleep_gain_minutes": 55, "poop_minutes": 42}
     if stage == "baby2": return {"hunger_minutes": 20, "mood_minutes": 24, "sleep_gain_minutes": 50, "poop_minutes": 40}
     if stage == "child": return {"hunger_minutes": 18, "mood_minutes": 22, "sleep_gain_minutes": 45, "poop_minutes": 36}
@@ -255,6 +259,16 @@ def update_sleep_state(user_id, row, now):
 
 def update_over_time(user_id, row):
     now=int(time.time())
+    actual_stage = effective_stage(row)
+    if safe_get(row, "stage") != actual_stage:
+        fix_updates = {"stage": actual_stage}
+        if actual_stage == "adult":
+            fix_updates["poop"] = 0
+            if safe_get(row, "call_reason") == "poop":
+                fix_updates["call_flag"] = 0
+                fix_updates["call_reason"] = None
+        database.update_pet(user_id, **fix_updates)
+        row = database.fetch_pet(user_id) or row
     if row["journeyed"] or row["odekake_active"]: return row, [], None, None
     if not poop_enabled(row) and (row["poop"] != 0 or safe_get(row, "call_reason") == "poop"):
         database.update_pet(
