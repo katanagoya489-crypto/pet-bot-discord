@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 CHARACTERS = {
-    "egg_yuiran": {"name": "結卵", "stage": "egg", "profile": "結びの力を秘めたふしぎなたまご。", "secret": False},
+    "egg_yuiran": {"name": "結卵", "stage": "egg", "profile": "結びの力を秘めたふしぎなたまご。", "secret": False, "image_names": ["結卵", "結っち_卵", "卵", "たまご", "egg"]},
     "baby_colon": {"name": "コロン", "stage": "baby1", "profile": "ころんと生まれた小さな命。", "secret": False},
     "baby_cororon": {"name": "コロロン", "stage": "baby2", "profile": "少しずつ感情が豊かになってきた。", "secret": False},
     "child_musubi": {"name": "ムスビー", "stage": "child", "profile": "いろんな個性に育っていく結びの子。", "secret": False},
@@ -20,7 +20,7 @@ CHARACTERS = {
 
 DEX_TARGETS = [
     "adult_sarii", "adult_icecream", "adult_kou", "adult_nazuna", "adult_kanato",
-    "adult_saina", "adult_akira", "adult_owl", "adult_ichiru", "secret_baaya", "secret_gugu",
+    "adult_saina", "adult_akira", "adult_owl", "adult_ichiru", "secret_baaya", "secret_gugu"
 ]
 
 STAGE_SECONDS = {
@@ -38,7 +38,7 @@ RANDOM_EVENT_INTERVAL_SECONDS = 45 * 60
 NOTIFICATION_REASON_TEXT = {
     "hunger": "🍚 おなかがすいているみたい！",
     "mood": "😣 ごきげんがさがっているみたい…",
-    "poop": "💩 おそうじしてほしいみたい！",
+    "poop": "💩 うんちがたまっているみたい！",
     "sick": "🤒 ぐあいがわるそう…",
     "sleepy": "🌙 ねむそうだよ… でんきをけしてあげよう。",
     "whim": "📢 ようはないのに よんでる！ しつけのチャンス！",
@@ -56,17 +56,4 @@ MUSIC_GAMES = {
     "rhythm": {"title": "リズムあそび", "question": "つぎのリズムとおなじものはどれ？ ♪ ♪ ♫", "choices": ["♪♪♫", "♪♫♪", "♫♪♪"], "answer": 0},
     "instrument": {"title": "音あて", "question": "メロディをささえることが多いのはどれ？", "choices": ["ドラム", "ピアノ", "ギター"], "answer": 1},
     "melody": {"title": "メロディ記憶", "question": "『ド レ ミ』とおなじならびはどれ？", "choices": ["ドレミ", "レミド", "ドミレ"], "answer": 0},
-}
-
-IMAGE_STATE_ALIASES = {
-    "通常": ["通常", "ふつう"],
-    "ごはん": ["ごはん", "ご飯", "ごはん中"],
-    "おやつ": ["おやつ", "お菓子", "スイーツ"],
-    "眠い": ["眠い", "ねむい", "睡眠", "寝る"],
-    "病気": ["病気", "びょうき"],
-    "怒り": ["怒り", "怒る", "ぷんすか"],
-    "喜び": ["喜び", "うれしい", "ハッピー"],
-    "ウンチ": ["ウンチ", "うんち", "おそうじ", "掃除"],
-    "卵": ["卵", "たまご"],
-    "卵割れる": ["卵割れる", "たまご割れる", "孵化"],
 }
