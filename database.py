@@ -57,22 +57,40 @@ CREATE TABLE IF NOT EXISTS pets (
     odekake_started_at INTEGER,
     notification_mode TEXT NOT NULL DEFAULT 'tamagotchi',
     birth_at INTEGER NOT NULL,
-    stage_entered_at INTEGER NOT NULL,
-    last_access_at INTEGER NOT NULL,
+    stage_entered_at INTEGER NOT NULL DEFAULT 0,
+    last_access_at INTEGER NOT NULL DEFAULT 0,
     last_minigame_at INTEGER NOT NULL DEFAULT 0,
     journeyed INTEGER NOT NULL DEFAULT 0
 )
 """
+
 MIGRATION_COLUMNS = [
-    ("panel_message_id", "TEXT"), ("system_message_id", "TEXT"), ("alert_message_id", "TEXT"),
-    ("notification_mode", "TEXT NOT NULL DEFAULT 'tamagotchi'"), ("call_reason", "TEXT"),
-    ("call_started_at", "INTEGER NOT NULL DEFAULT 0"), ("call_stage", "INTEGER NOT NULL DEFAULT 0"),
-    ("is_whim_call", "INTEGER NOT NULL DEFAULT 0"), ("is_sleeping", "INTEGER NOT NULL DEFAULT 0"),
-    ("lights_off", "INTEGER NOT NULL DEFAULT 0"), ("sound_enabled", "INTEGER NOT NULL DEFAULT 1"),
-    ("weight", "INTEGER NOT NULL DEFAULT 10"), ("last_whim_at", "INTEGER NOT NULL DEFAULT 0"),
-    ("last_call_notified_at", "INTEGER NOT NULL DEFAULT 0"), ("evolution_warned", "INTEGER NOT NULL DEFAULT 0"),
-    ("last_random_event_at", "INTEGER NOT NULL DEFAULT 0"), ("sickness_count", "INTEGER NOT NULL DEFAULT 0"), ("total_praise_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("panel_message_id", "TEXT"),
+    ("system_message_id", "TEXT"),
+    ("alert_message_id", "TEXT"),
+    ("notification_mode", "TEXT NOT NULL DEFAULT 'tamagotchi'"),
+    ("call_reason", "TEXT"),
+    ("call_started_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("call_stage", "INTEGER NOT NULL DEFAULT 0"),
+    ("is_whim_call", "INTEGER NOT NULL DEFAULT 0"),
+    ("is_sleeping", "INTEGER NOT NULL DEFAULT 0"),
+    ("lights_off", "INTEGER NOT NULL DEFAULT 0"),
+    ("sound_enabled", "INTEGER NOT NULL DEFAULT 1"),
+    ("weight", "INTEGER NOT NULL DEFAULT 10"),
+    ("last_whim_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("last_call_notified_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("evolution_warned", "INTEGER NOT NULL DEFAULT 0"),
+    ("last_random_event_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("sickness_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("total_praise_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("good_behavior_pending", "INTEGER NOT NULL DEFAULT 0"),
+    ("good_behavior_due_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("odekake_active", "INTEGER NOT NULL DEFAULT 0"),
+    ("odekake_started_at", "INTEGER"),
 ]
+
+SETTINGS_CREATE_SQL = "CREATE TABLE IF NOT EXISTS settings (user_id TEXT PRIMARY KEY, sleep_start TEXT NOT NULL DEFAULT '22:00', sleep_end TEXT NOT NULL DEFAULT '07:00', clock_offset_minutes INTEGER NOT NULL DEFAULT 0)"
+SETTINGS_MIGRATION_COLUMNS = [("clock_offset_minutes", "INTEGER NOT NULL DEFAULT 0")]
 
 def get_conn():
     folder = os.path.dirname(DATABASE_PATH)
@@ -82,8 +100,8 @@ def get_conn():
     conn.row_factory = sqlite3.Row
     return conn
 
-def _existing_columns(cur) -> set[str]:
-    rows = cur.execute("PRAGMA table_info(pets)").fetchall()
+def _existing_columns(cur, table: str) -> set[str]:
+    rows = cur.execute(f"PRAGMA table_info({table})").fetchall()
     return {row[1] for row in rows}
 
 def init_db():
@@ -92,13 +110,18 @@ def init_db():
     cur.execute(BASE_CREATE_SQL)
     cur.execute("CREATE TABLE IF NOT EXISTS collection (user_id TEXT NOT NULL, character_id TEXT NOT NULL, obtained_at INTEGER NOT NULL, PRIMARY KEY (user_id, character_id))")
     cur.execute("CREATE TABLE IF NOT EXISTS evolution_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, from_character_id TEXT NOT NULL, to_character_id TEXT NOT NULL, evolved_at INTEGER NOT NULL)")
-    cur.execute("CREATE TABLE IF NOT EXISTS settings (user_id TEXT PRIMARY KEY, sleep_start TEXT NOT NULL DEFAULT '22:00', sleep_end TEXT NOT NULL DEFAULT '07:00')")
+    cur.execute(SETTINGS_CREATE_SQL)
     cur.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     conn.commit()
-    existing = _existing_columns(cur)
+    existing = _existing_columns(cur, "pets")
     for col_name, col_def in MIGRATION_COLUMNS:
         if col_name not in existing:
             cur.execute(f"ALTER TABLE pets ADD COLUMN {col_name} {col_def}")
+            conn.commit()
+    settings_existing = _existing_columns(cur, "settings")
+    for col_name, col_def in SETTINGS_MIGRATION_COLUMNS:
+        if col_name not in settings_existing:
+            cur.execute(f"ALTER TABLE settings ADD COLUMN {col_name} {col_def}")
             conn.commit()
     conn.close()
 
@@ -106,30 +129,33 @@ def fetch_pet(user_id: int):
     conn = get_conn()
     row = conn.execute("SELECT * FROM pets WHERE user_id = ?", (str(user_id),)).fetchone()
     conn.close()
-    return row
+    return dict(row) if row else None
 
 def create_pet(user_id: int, guild_id: int, thread_id: int):
     now = int(time.time())
     conn = get_conn()
-    conn.execute("""
-    INSERT OR REPLACE INTO pets (
-        user_id, guild_id, thread_id, panel_message_id, system_message_id, alert_message_id, character_id, stage,
-        hunger, mood, sleepiness, affection, stress, discipline, poop, is_sick, call_flag, call_reason, call_started_at, call_stage,
-        is_whim_call, is_sleeping, lights_off, sound_enabled, weight, praise_pending, praise_due_at, good_behavior_pending, good_behavior_due_at, last_whim_at, last_call_notified_at,
-        evolution_warned, last_random_event_at, age_seconds, total_feed_count, total_snack_count, total_play_count,
-        total_sleep_count, total_status_count, total_clean_count, total_medicine_count, total_discipline_count, total_praise_count,
-        total_minigame_count, total_minigame_win_count, care_miss_count, sickness_count, night_visit_count,
-        odekake_active, odekake_started_at, notification_mode, birth_at, stage_entered_at, last_access_at,
-        last_minigame_at, journeyed
-    ) VALUES (?, ?, ?, NULL, NULL, NULL, 'egg_yuiran', 'egg',
-        4, 4, 0, 20, 0, 0, 0, 0, 0, NULL, 0, 0,
-        0, 0, 0, 1, 10, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0,
-        0, NULL, 'tamagotchi', ?, ?, ?, 0, 0
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO pets (
+            user_id, guild_id, thread_id, panel_message_id, system_message_id, alert_message_id, character_id, stage,
+            hunger, mood, sleepiness, affection, stress, discipline, poop, is_sick, call_flag, call_reason, call_started_at, call_stage,
+            is_whim_call, is_sleeping, lights_off, sound_enabled, weight, praise_pending, praise_due_at, good_behavior_pending, good_behavior_due_at, last_whim_at, last_call_notified_at,
+            evolution_warned, last_random_event_at, age_seconds, total_feed_count, total_snack_count, total_play_count,
+            total_sleep_count, total_status_count, total_clean_count, total_medicine_count, total_discipline_count, total_praise_count,
+            total_minigame_count, total_minigame_win_count, care_miss_count, sickness_count, night_visit_count,
+            odekake_active, odekake_started_at, notification_mode, birth_at, stage_entered_at, last_access_at,
+            last_minigame_at, journeyed
+        ) VALUES (?, ?, ?, NULL, NULL, NULL, 'egg_yuiran', 'egg',
+            4, 4, 0, 20, 0, 0, 0, 0, 0, NULL, 0, 0,
+            0, 0, 0, 1, 10, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0,
+            0, NULL, 'tamagotchi', ?, ?, ?, 0, 0
+        )
+        """,
+        (str(user_id), str(guild_id), str(thread_id), now, now, now),
     )
-    """, (str(user_id), str(guild_id), str(thread_id), now, now, now))
     conn.commit()
     conn.close()
 
@@ -176,11 +202,20 @@ def set_sleep_setting(user_id: int, start: str, end: str):
     conn.commit()
     conn.close()
 
+def set_clock_offset(user_id: int, minutes: int):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO settings (user_id, clock_offset_minutes) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET clock_offset_minutes=excluded.clock_offset_minutes",
+        (str(user_id), int(minutes)),
+    )
+    conn.commit()
+    conn.close()
+
 def fetch_sleep_setting(user_id: int):
     conn = get_conn()
     row = conn.execute("SELECT * FROM settings WHERE user_id = ?", (str(user_id),)).fetchone()
     conn.close()
-    return row
+    return dict(row) if row else None
 
 def get_meta(key: str):
     conn = get_conn()
@@ -191,5 +226,20 @@ def get_meta(key: str):
 def set_meta(key: str, value: str):
     conn = get_conn()
     conn.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+    conn.commit()
+    conn.close()
+
+def reset_current_pet(user_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM pets WHERE user_id = ?", (str(user_id),))
+    conn.commit()
+    conn.close()
+
+def reset_all_user_data(user_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM pets WHERE user_id = ?", (str(user_id),))
+    conn.execute("DELETE FROM collection WHERE user_id = ?", (str(user_id),))
+    conn.execute("DELETE FROM evolution_log WHERE user_id = ?", (str(user_id),))
+    conn.execute("DELETE FROM settings WHERE user_id = ?", (str(user_id),))
     conn.commit()
     conn.close()

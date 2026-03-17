@@ -4,14 +4,11 @@ from typing import Optional
 import discord
 from config import CHARACTER_CHANNEL_ID
 
-def _normalize(text: str) -> str:
-    return (text or "").strip()
-
-def _stem(filename: str) -> str:
-    return Path(filename).stem.strip()
+def _norm(s: str) -> str:
+    return (s or "").strip()
 
 async def get_image_url(bot: discord.Client, key: str) -> Optional[str]:
-    if not CHARACTER_CHANNEL_ID:
+    if not CHARACTER_CHANNEL_ID or not key:
         return None
     channel = bot.get_channel(CHARACTER_CHANNEL_ID)
     if channel is None:
@@ -22,25 +19,12 @@ async def get_image_url(bot: discord.Client, key: str) -> Optional[str]:
     if not isinstance(channel, discord.TextChannel):
         return None
 
-    wanted = _normalize(key)
     async for msg in channel.history(limit=2000):
-        if not msg.attachments:
-            continue
-
-        content = _normalize(msg.content)
-        first_line = _normalize(content.splitlines()[0] if content else "")
-        matched = content == wanted or first_line == wanted
-
-        if not matched:
-            for att in msg.attachments:
-                if _stem(att.filename) == wanted:
-                    matched = True
-                    break
-
-        if matched:
-            for att in msg.attachments:
-                ctype = (att.content_type or "").lower()
-                if ctype.startswith("image/") or att.filename.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
-                    return att.url
+        text = _norm(msg.content)
+        first_line = _norm(text.splitlines()[0]) if text else ""
+        attach_name = ""
+        if msg.attachments:
+            attach_name = Path(msg.attachments[0].filename).stem
+        if (text == key or first_line == key or attach_name == key) and msg.attachments:
             return msg.attachments[0].url
     return None
