@@ -148,7 +148,12 @@ def image_key_candidates(row, transient=None):
     if row["character_id"] == "egg_yuiran":
         if transient == "hatch":
             return list(dict.fromkeys(IMAGE_STATE_ALIASES.get("卵割れる", ["卵割れる"])))
-        return list(dict.fromkeys(IMAGE_STATE_ALIASES.get("卵", ["卵"])))
+        keys = list(dict.fromkeys(IMAGE_STATE_ALIASES.get("卵", ["卵"])))
+        if f"{name}_通常" not in keys:
+            keys.append(f"{name}_通常")
+        if name not in keys:
+            keys.append(name)
+        return keys
     if transient == "feed":
         return _expand_state_aliases(name, "ごはん")
     if transient == "snack":

@@ -7,6 +7,9 @@ from config import CHARACTER_CHANNEL_ID
 def _norm(s: str) -> str:
     return (s or "").strip()
 
+def _match_key(text: str, key: str) -> bool:
+    return _norm(text) == _norm(key)
+
 async def get_image_url(bot: discord.Client, key: str) -> Optional[str]:
     if not CHARACTER_CHANNEL_ID or not key:
         return None
@@ -19,12 +22,16 @@ async def get_image_url(bot: discord.Client, key: str) -> Optional[str]:
     if not isinstance(channel, discord.TextChannel):
         return None
 
+    target = _norm(key)
     async for msg in channel.history(limit=2000):
         text = _norm(msg.content)
         first_line = _norm(text.splitlines()[0]) if text else ""
-        attach_name = ""
-        if msg.attachments:
-            attach_name = Path(msg.attachments[0].filename).stem
-        if (text == key or first_line == key or attach_name == key) and msg.attachments:
+        if not msg.attachments:
+            continue
+        if _match_key(text, target) or _match_key(first_line, target):
             return msg.attachments[0].url
+        for att in msg.attachments:
+            stem = Path(att.filename).stem
+            if _match_key(stem, target):
+                return att.url
     return None

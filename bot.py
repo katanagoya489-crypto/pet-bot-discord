@@ -12,7 +12,7 @@ intents.members = True
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 WELCOME_MARKER = "○○っちへようこそ！"
-BOT_VERSION = "rebuild-clean-v2"
+BOT_VERSION = "latest-fixed-v1"
 TEMP_MESSAGE_SECONDS = 8
 
 def is_owner(interaction: discord.Interaction, owner_id: int) -> bool:
@@ -579,20 +579,12 @@ class DexNavButton(discord.ui.Button):
 
 
 @bot.command(name="image_keys")
-async def image_keys_cmd(ctx):
+async def image_keys(ctx):
     row = database.fetch_pet(ctx.author.id)
     if not row:
         return await ctx.reply("育成データがないよ。")
     keys = game_logic.image_keys_for_debug(row)
     await ctx.reply("いま探しにいく画像名:\n" + "\n".join(f"- {k}" for k in keys))
-
-@bot.command()
-async def image_keys(ctx):
-    row = database.fetch_pet(ctx.author.id)
-    if not row:
-        return await ctx.send("育成データがないよ。")
-    keys = game_logic.image_key_candidates(row)
-    await ctx.send("\n".join(["いま探しにいく画像名:"] + [f"- {k}" for k in keys]))
 
 @bot.event
 async def on_ready():
