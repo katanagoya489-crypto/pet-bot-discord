@@ -6,63 +6,85 @@ import database
 from game_data import CHARACTERS, DEX_TARGETS, STAGE_SECONDS, JOURNEY_MIN_SECONDS, JOURNEY_MAX_SECONDS, EVOLUTION_WARNING_SECONDS, MINIGAME_COOLDOWN_SECONDS, RANDOM_EVENT_INTERVAL_SECONDS, RANDOM_EVENTS, MUSIC_GAMES, NOTIFICATION_REASON_TEXT, IMAGE_STATE_ALIASES
 from config import SLEEP_START, SLEEP_END
 
-JST = ZoneInfo("Asia/Tokyo")
+BASE_TIMEZONE = ZoneInfo("Asia/Tokyo")
 
 def clamp(n:int, lo:int=0, hi:int=100): return max(lo, min(hi, int(n)))
 def clamp_meter(n:int): return max(0, min(4, int(n)))
 def parse_hhmm(s:str): h,m=s.split(":"); return int(h), int(m)
 
-def is_in_sleep_window(now_ts:int, start_str:str|None=None, end_str:str|None=None):
-    start_str = start_str or SLEEP_START
-    end_str = end_str or SLEEP_END
-    sh, sm = parse_hhmm(start_str); eh, em = parse_hhmm(end_str)
-    dt = datetime.fromtimestamp(now_ts)
-    current = dt.hour*60 + dt.minute
-    start = sh*60+sm; end = eh*60+em
-    if start <= end: return start <= current < end
-    return current >= start or current < end
+def normalize_hhmm(value:str) -> str:
+    h, m = parse_hhmm(value)
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise ValueError("HH:MM の範囲外です")
+    return f"{h:02d}:{m:02d}"
 
-def is_egg(row): return row["character_id"] == "egg_yuiran"
-
-def effective_stage(row):
-    cid = safe_get(row, "character_id")
-    info = CHARACTERS.get(cid, {})
-    return info.get("stage") or safe_get(row, "stage") or "egg"
-
-def poop_enabled(row):
-    return effective_stage(row) in ("baby1", "baby2", "child")
-
-def pet_name(row): return CHARACTERS[row["character_id"]]["name"]
-def bar(v:int, m:int=4, full="♥", empty="♡"): return full*v + empty*(m-v)
-def age_days(row): return max(0, (int(time.time())-row["birth_at"])//(24*60*60))
-
-def current_time_label(user_id=None):
-    now = datetime.now(JST)
-    if user_id is not None:
-        setting = database.fetch_sleep_setting(int(user_id))
-        if setting:
-            try:
-                now = now + timedelta(minutes=int(setting.get("clock_offset_minutes", 0) or 0))
-            except Exception:
-                pass
-    return now.strftime("%H:%M")
+def try_int(v, default=None):
+    try:
+        if v in (None, ""):
+            return default
+        return int(v)
+    except Exception:
+        return default
 
 def can_resume_pet(row):
     if not row:
         return False
     required = ["user_id", "guild_id", "character_id", "stage", "birth_at", "stage_entered_at", "last_access_at"]
     for key in required:
-        if safe_get(row, key) in (None, ""):
+        if row.get(key) in (None, ""):
             return False
     try:
         int(row["birth_at"]); int(row["stage_entered_at"]); int(row["last_access_at"])
-        if safe_get(row, "thread_id"):
+        if row.get("thread_id"):
             int(row["thread_id"])
-        if safe_get(row, "panel_message_id"):
+        if row.get("panel_message_id"):
             int(row["panel_message_id"])
     except Exception:
         return False
-    return safe_get(row, "character_id") in CHARACTERS
+    return row.get("character_id") in CHARACTERS
+
+def _clock_offset_minutes_from_setting(user_id:int|None=None, row=None) -> int:
+    try:
+        if row is not None:
+            user_id = int(row["user_id"])
+    except Exception:
+        pass
+    if user_id is None:
+        return 0
+    setting = database.fetch_user_settings(user_id)
+    if not setting:
+        return 0
+    return int(setting.get("clock_offset_minutes", 0) or 0)
+
+def local_now(user_id:int|None=None, row=None) -> datetime:
+    return datetime.now(BASE_TIMEZONE) + timedelta(minutes=_clock_offset_minutes_from_setting(user_id=user_id, row=row))
+
+def ts_to_local(ts:int, user_id:int|None=None, row=None) -> datetime:
+    return datetime.fromtimestamp(ts, BASE_TIMEZONE) + timedelta(minutes=_clock_offset_minutes_from_setting(user_id=user_id, row=row))
+
+def is_in_sleep_window(now_ts:int, start_str:str|None=None, end_str:str|None=None, *, user_id:int|None=None, row=None):
+    start_str = normalize_hhmm(start_str or SLEEP_START)
+    end_str = normalize_hhmm(end_str or SLEEP_END)
+    sh, sm = parse_hhmm(start_str); eh, em = parse_hhmm(end_str)
+    dt = ts_to_local(now_ts, user_id=user_id, row=row)
+    current = dt.hour*60 + dt.minute
+    start = sh*60+sm; end = eh*60+em
+    if start <= end: return start <= current < end
+    return current >= start or current < end
+
+def is_egg(row): return row["character_id"] == "egg_yuiran"
+def pet_name(row): return CHARACTERS[row["character_id"]]["name"]
+def is_adult_like(row):
+    cid = row.get("character_id", "")
+    st = row.get("stage", "")
+    return st == "adult" or cid.startswith("adult_") or cid.startswith("secret_")
+
+def poop_enabled(row):
+    return (not is_egg(row)) and (not is_adult_like(row))
+
+def bar(v:int, m:int=4, full="♥", empty="♡"): return full*v + empty*(m-v)
+def age_days(row): return max(0, (int(time.time())-row["birth_at"])//(24*60*60))
+def current_time_label(user_id:int|None=None, row=None): return local_now(user_id=user_id, row=row).strftime("%H:%M")
 
 def call_stage_label(row):
     stage = row.get("call_stage", 0)
@@ -74,6 +96,21 @@ def call_stage_label(row):
         return "かなりこまってる"
     return "すごくこまってる"
 def sound_label(row): return "ON" if row["sound_enabled"] else "OFF"
+
+def clock_offset_label(row) -> str:
+    minutes = _clock_offset_minutes_from_setting(row=row)
+    sign = "+" if minutes >= 0 else "-"
+    abs_minutes = abs(minutes)
+    return f"{sign}{abs_minutes // 60:02d}:{abs_minutes % 60:02d}"
+
+def sleep_window_label(row) -> str:
+    try:
+        setting = database.fetch_user_settings(int(row["user_id"]))
+    except Exception:
+        setting = None
+    start = setting["sleep_start"] if setting else SLEEP_START
+    end = setting["sleep_end"] if setting else SLEEP_END
+    return f"{start}〜{end}"
 
 def maybe_start_praise_event(user_id, row, now):
     if is_egg(row) or row["is_sleeping"] or row["call_flag"] or row["praise_pending"] or row.get("good_behavior_pending", 0):
@@ -88,27 +125,30 @@ def maybe_start_good_behavior_event(user_id, row, now):
     if good_state and random.randint(1, 100) <= 6:
         database.update_pet(user_id, good_behavior_pending=1, good_behavior_due_at=now)
 
+
+
 def _expand_state_aliases(name: str, state: str) -> list[str]:
-    keys = []
+    out = []
     for alias in IMAGE_STATE_ALIASES.get(state, [state]):
         if alias.startswith(name):
-            keys.append(alias)
+            key = alias
         else:
-            keys.append(f"{name}_{alias}")
-    keys.append(f"{name}_{state}")
-    keys.append(name)
-    out = []
-    for k in keys:
-        if k and k not in out:
-            out.append(k)
+            key = f"{name}_{alias}" if alias and not alias.startswith(name) else alias
+        if key and key not in out:
+            out.append(key)
+    direct = f"{name}_{state}" if state else name
+    if direct not in out:
+        out.append(direct)
+    if name not in out:
+        out.append(name)
     return out
 
 def image_key_candidates(row, transient=None):
     name = pet_name(row)
-    if is_egg(row):
+    if row["character_id"] == "egg_yuiran":
         if transient == "hatch":
-            return IMAGE_STATE_ALIASES.get("卵割れる", ["卵割れる"])
-        return IMAGE_STATE_ALIASES.get("卵", ["卵"])
+            return list(dict.fromkeys(IMAGE_STATE_ALIASES.get("卵割れる", ["卵割れる"])))
+        return list(dict.fromkeys(IMAGE_STATE_ALIASES.get("卵", ["卵"])))
     if transient == "feed":
         return _expand_state_aliases(name, "ごはん")
     if transient == "snack":
@@ -125,6 +165,9 @@ def image_key_candidates(row, transient=None):
         return _expand_state_aliases(name, "喜び")
     return _expand_state_aliases(name, "通常")
 
+def image_keys_for_debug(row):
+    return image_key_candidates(row)
+
 def image_key_for_pet(row, transient=None):
     keys = image_key_candidates(row, transient=transient)
     return keys[0] if keys else pet_name(row)
@@ -135,8 +178,8 @@ def status_lines(row):
     sleeping = "💤 ねている" if row["is_sleeping"] else "☀ おきている"
     whim = "（わがままサイン）" if row["is_whim_call"] else ""
     praise = "✨ ほめてサイン" if row["praise_pending"] else ""
-    good = "🙏 いいことサイン" if safe_get(row, "good_behavior_pending", 0) else ""
-    egg_note = "\n\n🥚 まだ卵の状態。孵化するまでは見守ってね。" if is_egg(row) else ""
+    good = "🙏 いいことサイン" if row.get("good_behavior_pending", 0) else ""
+    egg_note = "🥚 まだ卵の状態。孵化するまでは見守ってね。" if is_egg(row) else ""
     lines = [
         f"**{pet_name(row)}**",
         "",
@@ -149,17 +192,17 @@ def status_lines(row):
     ]
     if poop_enabled(row):
         lines.append(f"うんち　 {row['poop']}")
-    lines += [
+    lines.extend([
         f"たいちょう {health}",
         f"いま　 {sleeping}",
         f"状態 {call}{whim}",
-    ]
+    ])
     if praise:
         lines.append(praise)
     if good:
         lines.append(good)
     if egg_note:
-        lines.append(egg_note.strip())
+        lines.extend(["", egg_note])
     return "\n".join(lines)
 
 def build_check_text(row):
@@ -171,7 +214,9 @@ def build_check_text(row):
         f"名前：{pet_name(row)}",
         f"年齢：{age_days(row)}さい",
         f"体重：{row['weight']}g",
-        f"いまのじかん：{current_time_label(safe_get(row,'user_id'))}",
+        f"いまのじかん：{current_time_label(row=row)}",
+        f"時計補正：{clock_offset_label(row)}",
+        f"ねる時間：{sleep_window_label(row)}",
         "",
         f"おなか　 {bar(row['hunger'])}",
         f"ごきげん {bar(row['mood'])}",
@@ -182,14 +227,14 @@ def build_check_text(row):
     ]
     if poop_enabled(row):
         lines.append(f"うんち：{row['poop']}")
-    lines += [
+    lines.extend([
         f"ねむけ：{clamp(row['sleepiness'])}%",
         f"でんき：{'OFF' if row['lights_off'] else 'ON'}",
         f"状態：{sleeping}",
         f"音：{sound_label(row)}",
         f"注意：{'点灯中' if row['call_flag'] else '消灯'}",
         f"呼出し段階：{call_stage_label(row)}",
-    ]
+    ])
     return "\n".join(lines)
 
 def get_decay_profile(row):
@@ -197,7 +242,7 @@ def get_decay_profile(row):
     if stage == "baby1": return {"hunger_minutes": 22, "mood_minutes": 26, "sleep_gain_minutes": 55, "poop_minutes": 42}
     if stage == "baby2": return {"hunger_minutes": 20, "mood_minutes": 24, "sleep_gain_minutes": 50, "poop_minutes": 40}
     if stage == "child": return {"hunger_minutes": 18, "mood_minutes": 22, "sleep_gain_minutes": 45, "poop_minutes": 36}
-    if stage == "adult": return {"hunger_minutes": 26, "mood_minutes": 30, "sleep_gain_minutes": 60, "poop_minutes": 52}
+    if stage == "adult": return {"hunger_minutes": 26, "mood_minutes": 30, "sleep_gain_minutes": 60, "poop_minutes": 999999}
     return {"hunger_minutes": 9999, "mood_minutes": 9999, "sleep_gain_minutes": 9999, "poop_minutes": 9999}
 
 def personality_bonus(character_id, action):
@@ -250,7 +295,7 @@ def evolve_if_needed(user_id, row):
         elif cid == "baby_colon": next_id, next_stage = "baby_cororon", "baby2"
         elif cid == "baby_cororon": next_id, next_stage = "child_musubi", "child"
         else: next_id, next_stage = finalize_adult(choose_normal_adult(row)), "adult"
-        database.update_pet(user_id, character_id=next_id, stage=next_stage, stage_entered_at=now, evolution_warned=0)
+        database.update_pet(user_id, character_id=next_id, stage=next_stage, stage_entered_at=now, evolution_warned=0, poop=0 if next_stage == "adult" else row.get("poop",0), call_flag=0 if next_stage == "adult" and row.get("call_reason")=="poop" else row.get("call_flag",0), call_reason=None if next_stage == "adult" and row.get("call_reason")=="poop" else row.get("call_reason"))
         database.add_evolution_log(user_id, cid, next_id)
         messages.append(f"✨ **{CHARACTERS[cid]['name']}** は **{CHARACTERS[next_id]['name']}** に進化した！")
     elif row["stage"] == "adult":
@@ -275,14 +320,14 @@ def random_event_if_due(user_id, row):
 def whim_check(row, now):
     if is_egg(row) or row["is_sleeping"]: return 0, None, row["last_whim_at"]
     if row["call_flag"]: return row["is_whim_call"], row["call_reason"], row["last_whim_at"]
-    essentials_ok = row["hunger"] >= 3 and row["mood"] >= 3 and row["poop"] == 0 and row["is_sick"] == 0 and row["sleepiness"] < 80
+    essentials_ok = row["hunger"] >= 3 and row["mood"] >= 3 and ((not poop_enabled(row)) or row["poop"] == 0) and row["is_sick"] == 0 and row["sleepiness"] < 80
     if essentials_ok and now - row["last_whim_at"] >= 40*60 and random.randint(1,100) <= 25:
         return 1, "whim", now
     return 0, None, row["last_whim_at"]
 
 def determine_call_reason(row):
     if row["is_sick"]: return 1, "sick"
-    if row["poop"] >= 1: return 1, "poop"
+    if poop_enabled(row) and row["poop"] >= 1: return 1, "poop"
     if row["sleepiness"] >= 90 and not row["is_sleeping"]: return 1, "sleepy"
     if row["hunger"] <= 0: return 1, "hunger"
     if row["mood"] <= 0: return 1, "mood"
@@ -290,13 +335,17 @@ def determine_call_reason(row):
     return 0, None
 
 def update_sleep_state(user_id, row, now):
-    setting = database.fetch_sleep_setting(user_id)
+    setting = database.fetch_user_settings(user_id)
     sleep_start = setting["sleep_start"] if setting else SLEEP_START
     sleep_end = setting["sleep_end"] if setting else SLEEP_END
-    night_window = is_in_sleep_window(now, sleep_start, sleep_end)
-    is_sleeping = row["is_sleeping"]; lights_off=row["lights_off"]; wake_message=None
+    night_window = is_in_sleep_window(now, sleep_start, sleep_end, user_id=user_id, row=row)
+    is_sleeping = row["is_sleeping"]
+    lights_off = row["lights_off"]
+    wake_message = None
     if is_sleeping and not night_window:
-        is_sleeping=0; lights_off=0; wake_message="☀ おきたよ！"
+        is_sleeping = 0
+        lights_off = 0
+        wake_message = "☀ おきたよ！"
     return is_sleeping, lights_off, wake_message
 
 def update_over_time(user_id, row):
@@ -314,14 +363,14 @@ def update_over_time(user_id, row):
     hunger_loss = int(minutes/profile["hunger_minutes"]) if not is_sleeping else max(0, int(minutes/(profile["hunger_minutes"]*3.0)))
     mood_loss = int(minutes/profile["mood_minutes"]) if not is_sleeping else 0
     sleep_gain = 0 if is_sleeping else int(minutes/profile["sleep_gain_minutes"])
-    poop_gain = int(minutes/profile["poop_minutes"]) if not is_sleeping else max(0,int(minutes/(profile["poop_minutes"]*2.5)))
+    poop_gain = (int(minutes/profile["poop_minutes"]) if not is_sleeping else max(0,int(minutes/(profile["poop_minutes"]*2.5)))) if poop_enabled(row) else 0
     hunger=clamp_meter(row["hunger"]-hunger_loss); mood=clamp_meter(row["mood"]-mood_loss)
     sleepiness = clamp(row["sleepiness"] + sleep_gain if not is_sleeping else max(0, row["sleepiness"] - int(minutes*1.5)))
-    poop=min(3, row["poop"]+poop_gain)
+    poop=0 if not poop_enabled(row) else min(3, row["poop"]+poop_gain) if poop_enabled(row) else 0
     stress=row["stress"]
     if hunger <= 1: stress += 8
     if mood <= 1: stress += 8
-    if poop >= 1: stress += 10
+    if poop_enabled(row) and poop >= 1: stress += 10
     if sleepiness >= 80 and not is_sleeping: stress += 6
     if is_sleeping and not lights_off: stress += 10
     stress=clamp(stress)
@@ -330,7 +379,7 @@ def update_over_time(user_id, row):
     is_sick=row["is_sick"]; sickness_count=row["sickness_count"]
     if not is_sick:
         sick_risk = 0
-        if poop >= 2: sick_risk += 20
+        if poop_enabled(row) and poop >= 2: sick_risk += 20
         if stress >= 70: sick_risk += 20
         if hunger == 0: sick_risk += 20
         if row["care_miss_count"] >= 3: sick_risk += 10
@@ -359,7 +408,8 @@ def update_over_time(user_id, row):
     care_miss_count = row["care_miss_count"]
     if row["call_flag"] and now - row["last_call_notified_at"] >= 20*60: care_miss_count += 1
     night_visit_count = row["night_visit_count"]
-    if datetime.fromtimestamp(now).hour >= 22 or datetime.fromtimestamp(now).hour < 5:
+    local_dt = ts_to_local(now, user_id=user_id, row=row)
+    if local_dt.hour >= 22 or local_dt.hour < 5:
         night_visit_count += 1
         bonus=personality_bonus(row["character_id"], "night_visit"); affection=clamp(affection+bonus.get("affection",0))
     evo_warned = row["evolution_warned"]; warning=None
@@ -467,10 +517,13 @@ def perform_action(user_id, row, action):
             )
             result="✨ いまは ほめるタイミングじゃないみたい。"
     elif action=="clean":
-        bonus=personality_bonus(row["character_id"],"clean")
-        database.update_pet(user_id, poop=0, stress=clamp(row["stress"]-12+bonus.get("stress",0)), total_clean_count=row["total_clean_count"]+1,
-            call_flag=0 if row["call_reason"]=="poop" else row["call_flag"], call_reason=None if row["call_reason"]=="poop" else row["call_reason"], last_access_at=now)
-        result="🧹 うんちをきれいにした！"
+        if not poop_enabled(row):
+            result="🧹 いまはおそうじしなくてだいじょうぶ。"
+        else:
+            bonus=personality_bonus(row["character_id"],"clean")
+            database.update_pet(user_id, poop=0, stress=clamp(row["stress"]-12+bonus.get("stress",0)), total_clean_count=row["total_clean_count"]+1,
+                call_flag=0 if row["call_reason"]=="poop" else row["call_flag"], call_reason=None if row["call_reason"]=="poop" else row["call_reason"], last_access_at=now)
+            result="🧹 うんちをきれいにした！"
     elif action=="medicine":
         if row["is_sick"]:
             cured=1 if random.randint(1,100)<=85 else 0
@@ -552,6 +605,28 @@ def resolve_minigame(user_id, row, game_key, choice_index):
     if warning: extra.append(warning)
     if event: extra.append(event)
     return row, msg, extra
+
+def set_display_clock_to_hhmm(user_id:int, hhmm:str) -> int:
+    hhmm = normalize_hhmm(hhmm)
+    target_h, target_m = parse_hhmm(hhmm)
+    actual = datetime.now(BASE_TIMEZONE)
+    target_minutes = target_h * 60 + target_m
+    actual_minutes = actual.hour * 60 + actual.minute
+    diff = target_minutes - actual_minutes
+    if diff <= -720:
+        diff += 1440
+    elif diff > 720:
+        diff -= 1440
+    database.set_clock_offset_minutes(user_id, diff)
+    return diff
+
+
+def adjust_display_clock(user_id:int, delta_minutes:int) -> int:
+    return database.adjust_clock_offset_minutes(user_id, delta_minutes)
+
+
+def reset_display_clock(user_id:int) -> None:
+    database.reset_clock_offset_minutes(user_id)
 
 def notification_mode_label(mode:str): return {"tamagotchi":"たまごっち","normal":"ふつう","quiet":"静か","mute":"ミュート"}.get(mode, mode)
 
