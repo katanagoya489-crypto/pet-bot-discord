@@ -13,7 +13,6 @@ intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 WELCOME_MARKER = "○○っちへようこそ！"
 TEMP_MESSAGE_SECONDS = 8
-BOT_VERSION = "no-poop-v4"
 
 def is_owner(interaction: discord.Interaction, owner_id: int) -> bool:
     return interaction.user.id == owner_id
@@ -36,9 +35,12 @@ async def send_temp_interaction_message(interaction, content=None, *, embed=None
 
 async def build_embed(row, transient=None):
     embed = discord.Embed(description=game_logic.status_lines(row))
-    key = game_logic.image_key_for_pet(row, transient=transient)
-    url = await image_service.get_image_url(bot, key)
-    if url: embed.set_image(url=url)
+    keys = game_logic.image_keys_for_pet(row, transient=transient) if hasattr(game_logic, "image_keys_for_pet") else [game_logic.image_key_for_pet(row, transient=transient)]
+    for key in keys:
+        url = await image_service.get_image_url(bot, key)
+        if url:
+            embed.set_image(url=url)
+            break
     return embed
 
 async def build_letter_embed(character_name: str):
@@ -109,7 +111,7 @@ def remind_due(row, now:int):
     last = row["last_call_notified_at"] or 0
     if last == 0:
         return True
-    stage = row.get("call_stage", 1) if hasattr(row, "get") else 1
+    stage = row.get("call_stage", 1)
     interval = 18 * 60 if stage <= 1 else 12 * 60 if stage == 2 else 7 * 60
     return now - last >= interval
 
@@ -185,6 +187,8 @@ class MainPanelView(discord.ui.View):
         channel=interaction.channel
         if not isinstance(channel, discord.TextChannel): return await send_temp_interaction_message(interaction, "テキストチャンネルで使ってね。")
         try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
             thread=await create_clean_thread(channel, f"{user.display_name}っち")
             row,_=game_logic.start_pet_if_needed(user.id, guild.id, thread.id)
             embed=await build_embed(row)
@@ -206,6 +210,8 @@ class MainPanelView(discord.ui.View):
             try: thread = bot.get_channel(int(row["thread_id"])) or await bot.fetch_channel(int(row["thread_id"]))
             except Exception: thread=None
         try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
             if thread is None:
                 channel=interaction.channel
                 if not isinstance(channel, discord.TextChannel): return await send_temp_interaction_message(interaction, "テキストチャンネルで使ってね。")
@@ -238,12 +244,14 @@ class PetView(discord.ui.View):
     def __init__(self, owner_id:int):
         super().__init__(timeout=None)
         self.owner_id=owner_id
-        row = database.fetch_pet(owner_id)
-        if row and not game_logic.poop_enabled(row):
-            try:
-                self.remove_item(self.clean)
-            except Exception:
-                pass
+        try:
+            row = database.fetch_pet(owner_id)
+            if row and hasattr(game_logic, "poop_enabled") and (not game_logic.poop_enabled(row)):
+                for item in list(self.children):
+                    if getattr(item, "custom_id", "") == "pet:clean":
+                        self.remove_item(item)
+        except Exception:
+            pass
     async def _owner_check(self, interaction):
         if not is_owner(interaction, self.owner_id):
             await send_temp_interaction_message(interaction, "この子のお世話は本人だけができるよ。"); return False
@@ -383,9 +391,17 @@ class DexNavButton(discord.ui.Button):
         if interaction.user.id != self.owner_id: return await send_temp_interaction_message(interaction, "これはあなたの図鑑表示だよ。")
         await interaction.response.edit_message(content=game_logic.build_dex_text(self.owner_id), view=DexView(self.owner_id, self.page))
 
+@bot.command(name="image_keys")
+async def image_keys_cmd(ctx):
+    row = database.fetch_pet(ctx.author.id)
+    if not row:
+        return await ctx.send("育成データがないよ。")
+    keys = game_logic.image_keys_for_debug(row) if hasattr(game_logic, "image_keys_for_debug") else [game_logic.image_key_for_pet(row)]
+    await ctx.send("\n".join(keys[:25]))
+
 @bot.event
 async def on_ready():
-    database.init_db(); bot.add_view(MainPanelView()); print(f"Logged in as {bot.user} / version={BOT_VERSION}")
+    database.init_db(); bot.add_view(MainPanelView()); print(f"Logged in as {bot.user}")
     bot.loop.create_task(ensure_main_panel()); bot.loop.create_task(auto_tick_loop())
 
 @bot.command()

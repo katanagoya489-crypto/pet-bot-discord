@@ -92,13 +92,18 @@ def init_db():
     cur.execute(BASE_CREATE_SQL)
     cur.execute("CREATE TABLE IF NOT EXISTS collection (user_id TEXT NOT NULL, character_id TEXT NOT NULL, obtained_at INTEGER NOT NULL, PRIMARY KEY (user_id, character_id))")
     cur.execute("CREATE TABLE IF NOT EXISTS evolution_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, from_character_id TEXT NOT NULL, to_character_id TEXT NOT NULL, evolved_at INTEGER NOT NULL)")
-    cur.execute("CREATE TABLE IF NOT EXISTS settings (user_id TEXT PRIMARY KEY, sleep_start TEXT NOT NULL DEFAULT '22:00', sleep_end TEXT NOT NULL DEFAULT '07:00')")
+    cur.execute("CREATE TABLE IF NOT EXISTS settings (user_id TEXT PRIMARY KEY, sleep_start TEXT NOT NULL DEFAULT '22:00', sleep_end TEXT NOT NULL DEFAULT '07:00', clock_offset_minutes INTEGER NOT NULL DEFAULT 0)")
     cur.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     conn.commit()
     existing = _existing_columns(cur)
     for col_name, col_def in MIGRATION_COLUMNS:
         if col_name not in existing:
             cur.execute(f"ALTER TABLE pets ADD COLUMN {col_name} {col_def}")
+            conn.commit()
+    existing_settings = {row[1] for row in cur.execute("PRAGMA table_info(settings)").fetchall()}
+    for col_name, col_def in SETTINGS_MIGRATION_COLUMNS:
+        if col_name not in existing_settings:
+            cur.execute(f"ALTER TABLE settings ADD COLUMN {col_name} {col_def}")
             conn.commit()
     conn.close()
 
@@ -170,8 +175,8 @@ def add_evolution_log(user_id: int, from_character_id: str, to_character_id: str
 def set_sleep_setting(user_id: int, start: str, end: str):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO settings (user_id, sleep_start, sleep_end) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET sleep_start=excluded.sleep_start, sleep_end=excluded.sleep_end",
-        (str(user_id), start, end),
+        "INSERT INTO settings (user_id, sleep_start, sleep_end, clock_offset_minutes) VALUES (?, ?, ?, COALESCE((SELECT clock_offset_minutes FROM settings WHERE user_id = ?), 0)) ON CONFLICT(user_id) DO UPDATE SET sleep_start=excluded.sleep_start, sleep_end=excluded.sleep_end",
+        (str(user_id), start, end, str(user_id)),
     )
     conn.commit()
     conn.close()
@@ -181,6 +186,15 @@ def fetch_sleep_setting(user_id: int):
     row = conn.execute("SELECT * FROM settings WHERE user_id = ?", (str(user_id),)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+def fetch_user_settings(user_id: int):
+    return fetch_sleep_setting(user_id)
+
+def set_clock_offset_minutes(user_id: int, minutes: int):
+    conn = get_conn()
+    conn.execute("INSERT INTO settings (user_id, sleep_start, sleep_end, clock_offset_minutes) VALUES (?, '22:00', '07:00', ?) ON CONFLICT(user_id) DO UPDATE SET clock_offset_minutes=excluded.clock_offset_minutes", (str(user_id), int(minutes)))
+    conn.commit()
+    conn.close()
 
 def get_meta(key: str):
     conn = get_conn()
@@ -193,3 +207,6 @@ def set_meta(key: str, value: str):
     conn.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
     conn.commit()
     conn.close()
+
+
+SETTINGS_MIGRATION_COLUMNS = [("clock_offset_minutes", "INTEGER NOT NULL DEFAULT 0")]
