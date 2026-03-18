@@ -10,7 +10,8 @@ intents.guilds = True
 intents.members = True
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
-BOT_VERSION = "yuitchi-minfix-2026-03-19b"
+BOT_VERSION = "yuitchi-minfix-2026-03-19c"
+PET_SCHEMA_VERSION = database.PET_DATA_SCHEMA_VERSION
 WELCOME_MARKER = "○○っちへようこそ！"
 TEMP_MESSAGE_SECONDS = 8
 def is_owner(interaction: discord.Interaction, owner_id: int) -> bool:
@@ -47,7 +48,7 @@ async def build_letter_embed(character_name: str):
     embed.set_image(url=url)
     return embed
 async def upsert_system_log(thread: discord.Thread, user_id: int, text: str):
-    row = database.fetch_pet(user_id)
+    row = database.fetch_pet_clean(user_id)
     if not row: return
     message_id = row["system_message_id"]; body = f"【システムログ】\n{text}"
     if message_id:
@@ -56,7 +57,7 @@ async def upsert_system_log(thread: discord.Thread, user_id: int, text: str):
         except Exception: pass
     msg = await thread.send(body); database.update_pet(user_id, system_message_id=str(msg.id))
 async def upsert_alert_log(thread: discord.Thread, user_id: int, text: str):
-    row = database.fetch_pet(user_id)
+    row = database.fetch_pet_clean(user_id)
     if not row: return
     message_id = row["alert_message_id"]; body = f"【呼出しログ】\n{text}"
     if message_id:
@@ -160,9 +161,14 @@ async def ensure_main_panel():
 async def auto_tick_loop():
     await bot.wait_until_ready()
     while not bot.is_closed():
-        conn=database.get_conn(); rows=conn.execute("SELECT user_id FROM pets WHERE journeyed = 0").fetchall(); conn.close()
-        for r in rows:
-            try: await refresh_panel_for_user(int(r["user_id"]))
+        try:
+            if int(time.time()) % (15 * 60) < 60:
+                stats = database.migrate_all_pets_to_latest(active_only=False)
+                print(f"全プレイヤーデータ更新: total={stats['total']} updated={stats['updated']} deleted={stats['deleted']} kept={stats['kept']}")
+        except Exception as e:
+            print(f"全プレイヤーデータ更新失敗: {type(e).__name__}")
+        for user_id in database.list_pet_user_ids(active_only=True):
+            try: await refresh_panel_for_user(int(user_id))
             except Exception: pass
         await asyncio.sleep(60)
 class MainPanelView(discord.ui.View):
@@ -211,7 +217,7 @@ class MainPanelView(discord.ui.View):
                 if not isinstance(channel, discord.TextChannel): return await send_temp_interaction_message(interaction, "テキストチャンネルで使ってね。")
                 new_thread=await create_clean_thread(channel, f"{user.display_name}っち-つづき")
                 database.update_pet(user.id, thread_id=str(new_thread.id), panel_message_id=None, system_message_id=None, alert_message_id=None)
-                row=database.fetch_pet(user.id); embed=await build_embed(row)
+                row=database.fetch_pet_clean(user.id); embed=await build_embed(row)
                 panel=await new_thread.send(f"{user.mention} の育成データを続きから復帰したよ！", embed=embed, view=PetView(user.id))
                 database.update_pet(user.id, panel_message_id=str(panel.id))
                 await upsert_alert_log(new_thread, user.id, "○ 注意アイコン消灯\nいまはだいじょうぶ。\nまたようすをみてね。")
@@ -258,7 +264,7 @@ class PetView(discord.ui.View):
         await refresh_panel_for_user(self.owner_id, prefix="" if action=="status" else result, transient=transient)
         thread=interaction.channel
         if isinstance(thread, discord.Thread):
-            latest_row=database.fetch_pet(self.owner_id)
+            latest_row=database.fetch_pet_clean(self.owner_id)
             if result:
                 title="【チェック画面】" if action=="status" else "🫧 おせわけっか"
                 await upsert_alert_log(thread, self.owner_id, compose_result_alert(title, result, latest_row, self.owner_id))
@@ -336,7 +342,7 @@ class SettingsView(discord.ui.View):
 class MiniGameMenuView(discord.ui.View):
     def __init__(self, owner_id:int): super().__init__(timeout=180); self.owner_id=owner_id
     async def send_game(self, interaction, key:str):
-        row=database.fetch_pet(self.owner_id); game, err = game_logic.start_minigame(self.owner_id, row, key)
+        row=database.fetch_pet_clean(self.owner_id); game, err = game_logic.start_minigame(self.owner_id, row, key)
         if err: return await send_temp_interaction_message(interaction, err)
         await send_temp_interaction_message(interaction, f"**{game['title']}**\n{game['question']}", view=MiniGameAnswerView(self.owner_id, key), seconds=15)
     @discord.ui.button(label="リズム", style=discord.ButtonStyle.green)
@@ -354,7 +360,7 @@ class MiniGameChoiceButton(discord.ui.Button):
         super().__init__(label=label, style=discord.ButtonStyle.blurple); self.owner_id=owner_id; self.game_key=game_key; self.idx=idx
     async def callback(self, interaction):
         if interaction.user.id != self.owner_id: return await send_temp_interaction_message(interaction, "本人だけが遊べるよ。")
-        row=database.fetch_pet(self.owner_id); _, msg, evo = game_logic.resolve_minigame(self.owner_id, row, self.game_key, self.idx)
+        row=database.fetch_pet_clean(self.owner_id); _, msg, evo = game_logic.resolve_minigame(self.owner_id, row, self.game_key, self.idx)
         await interaction.response.edit_message(content="このミニゲームは終了したよ。", view=None)
         await asyncio.sleep(2)
         try: await interaction.delete_original_response()
@@ -362,7 +368,7 @@ class MiniGameChoiceButton(discord.ui.Button):
         await refresh_panel_for_user(self.owner_id)
         thread=interaction.channel
         if isinstance(thread, discord.Thread):
-            latest_row=database.fetch_pet(self.owner_id)
+            latest_row=database.fetch_pet_clean(self.owner_id)
             body=compose_result_alert("🎮 ミニゲームけっか", msg + ("\n" + "\n".join(evo) if evo else ""), latest_row, self.owner_id)
             await upsert_alert_log(thread, self.owner_id, body)
 class DexView(discord.ui.View):
@@ -396,7 +402,16 @@ async def on_ready():
     database.init_db()
     bot.add_view(MainPanelView())
     print(f"結っちBOT 起動: version={BOT_VERSION}")
+    print(f"保存仕様: schema={PET_SCHEMA_VERSION}")
     print(f"Logged in as {bot.user}")
+    try:
+        stats = database.ensure_pet_schema_latest(force=False)
+        if stats.get("skipped"):
+            print(f"全プレイヤーデータ更新: skipped version={stats['version']}")
+        else:
+            print(f"全プレイヤーデータ更新: total={stats['total']} updated={stats['updated']} deleted={stats['deleted']} kept={stats['kept']} version={stats['version']}")
+    except Exception as e:
+        print(f"全プレイヤーデータ更新失敗: {type(e).__name__}")
     try:
         await image_service.warm_image_cache(bot)
     except Exception as e:

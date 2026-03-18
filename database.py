@@ -4,6 +4,9 @@ from typing import Any
 from config import DATABASE_PATH
 from game_data import CHARACTERS
 
+PET_DATA_SCHEMA_VERSION = "2026-03-19c"
+ALLOWED_NOTIFICATION_MODES = {"tamagotchi", "normal", "quiet", "mute"}
+
 BASE_CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS pets (
     user_id TEXT PRIMARY KEY,
@@ -226,6 +229,8 @@ def repair_pet_row(user_id: int, row):
     if _coerce_int(row.get("odekake_active"), 0) and not row.get("odekake_started_at"):
         updates["odekake_active"] = 0
         updates["odekake_started_at"] = None
+    if row.get("notification_mode") not in ALLOWED_NOTIFICATION_MODES:
+        updates["notification_mode"] = "tamagotchi"
 
     if updates:
         update_pet(user_id, **updates)
@@ -359,6 +364,52 @@ def set_meta(key: str, value: str):
     conn.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
     conn.commit()
     conn.close()
+
+
+def list_pet_user_ids(*, active_only: bool = False):
+    conn = get_conn()
+    if active_only:
+        rows = conn.execute("SELECT user_id FROM pets WHERE journeyed = 0 ORDER BY user_id ASC").fetchall()
+    else:
+        rows = conn.execute("SELECT user_id FROM pets ORDER BY user_id ASC").fetchall()
+    conn.close()
+    result = []
+    for row in rows:
+        try:
+            result.append(int(row["user_id"]))
+        except Exception:
+            continue
+    return result
+
+
+def migrate_all_pets_to_latest(*, active_only: bool = False):
+    stats = {"total": 0, "updated": 0, "deleted": 0, "kept": 0}
+    for user_id in list_pet_user_ids(active_only=active_only):
+        before = fetch_pet(user_id)
+        if not before:
+            continue
+        stats["total"] += 1
+        after = repair_pet_row(user_id, before)
+        if after and is_pet_row_valid(after):
+            if after != before:
+                stats["updated"] += 1
+            else:
+                stats["kept"] += 1
+            continue
+        delete_pet(user_id)
+        stats["deleted"] += 1
+    return stats
+
+
+def ensure_pet_schema_latest(*, force: bool = False):
+    current = get_meta("pet_schema_version")
+    if (not force) and current == PET_DATA_SCHEMA_VERSION:
+        return {"skipped": 1, "version": PET_DATA_SCHEMA_VERSION, "total": 0, "updated": 0, "deleted": 0, "kept": 0}
+    stats = migrate_all_pets_to_latest(active_only=False)
+    set_meta("pet_schema_version", PET_DATA_SCHEMA_VERSION)
+    stats["version"] = PET_DATA_SCHEMA_VERSION
+    stats["skipped"] = 0
+    return stats
 
 
 SETTINGS_MIGRATION_COLUMNS = [("clock_offset_minutes", "INTEGER NOT NULL DEFAULT 0")]
