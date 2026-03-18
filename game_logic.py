@@ -392,7 +392,9 @@ def update_over_time(user_id, row):
 def perform_action(user_id, row, action):
     row = database.fetch_pet_clean(user_id) or row
     now=int(time.time()); transient=None
-    if is_egg(row) and action != "status":
+    if row.get("odekake_active") and action not in ("status", "odekake"):
+        return row, "🏠 おるすばん中だよ。おむかえするまでほかのおせわはできないよ。", [], transient
+    if is_egg(row) and action not in ("status", "odekake"):
         row, msgs, warning, event = update_over_time(user_id,row); extra=[]; 
         if warning: extra.append(warning)
         if event: extra.append(event)
@@ -479,6 +481,12 @@ def perform_action(user_id, row, action):
             result="💊 おくすりがきいた！" if cured else "💊 まだちょっとつらそう…。"
         else:
             result="💊 いまは げんきそう。"
+    elif action=="odekake":
+        if row.get("odekake_active"):
+            row, result, msgs = stop_odekake(user_id, row)
+            return row, result, msgs, transient
+        row, result = start_odekake(user_id, row)
+        return row, result, [], transient
     row = database.fetch_pet(user_id); row, msgs, warning, event = update_over_time(user_id,row)
     if warning: msgs.append(warning)
     if event: msgs.append(event)

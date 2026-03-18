@@ -2,6 +2,7 @@ from __future__ import annotations
 import os, sqlite3, time
 from typing import Any
 from config import DATABASE_PATH
+from game_data import CHARACTERS
 
 BASE_CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS pets (
@@ -110,6 +111,127 @@ def init_db():
 
 VALID_STAGES = {"egg", "baby1", "baby2", "child", "adult"}
 REQUIRED_PET_FIELDS = ("guild_id", "character_id", "stage", "birth_at", "stage_entered_at", "last_access_at")
+STAGE_DEFAULT_CHARACTER = {
+    "egg": "egg_yuiran",
+    "baby1": "baby_colon",
+    "baby2": "baby_cororon",
+    "child": "child_musubi",
+    "adult": "adult_kanato",
+}
+
+
+def _is_blank(value) -> bool:
+    return value is None or value == ""
+
+
+def _coerce_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def repair_pet_row(user_id: int, row):
+    if not row:
+        return None
+    now = int(time.time())
+    updates: dict[str, Any] = {}
+    character_id = row.get("character_id")
+    stage = row.get("stage")
+
+    if character_id not in CHARACTERS:
+        if stage in STAGE_DEFAULT_CHARACTER:
+            character_id = STAGE_DEFAULT_CHARACTER[stage]
+            updates["character_id"] = character_id
+        else:
+            return None
+
+    expected_stage = CHARACTERS[character_id]["stage"]
+    if stage not in VALID_STAGES:
+        stage = expected_stage
+        updates["stage"] = stage
+    elif stage != expected_stage:
+        stage = expected_stage
+        updates["stage"] = stage
+
+    if _is_blank(row.get("guild_id")):
+        updates["guild_id"] = str(row.get("guild_id") or "0")
+
+    for key in ("birth_at", "stage_entered_at", "last_access_at"):
+        if _is_blank(row.get(key)):
+            updates[key] = now
+
+    int_defaults = {
+        "hunger": 4,
+        "mood": 4,
+        "sleepiness": 0,
+        "affection": 20,
+        "stress": 0,
+        "discipline": 0,
+        "poop": 0,
+        "is_sick": 0,
+        "call_flag": 0,
+        "call_started_at": 0,
+        "call_stage": 0,
+        "is_whim_call": 0,
+        "is_sleeping": 0,
+        "lights_off": 0,
+        "sound_enabled": 1,
+        "weight": 10,
+        "praise_pending": 0,
+        "praise_due_at": 0,
+        "good_behavior_pending": 0,
+        "good_behavior_due_at": 0,
+        "last_whim_at": 0,
+        "last_call_notified_at": 0,
+        "evolution_warned": 0,
+        "last_random_event_at": 0,
+        "age_seconds": 0,
+        "total_feed_count": 0,
+        "total_snack_count": 0,
+        "total_play_count": 0,
+        "total_sleep_count": 0,
+        "total_status_count": 0,
+        "total_clean_count": 0,
+        "total_medicine_count": 0,
+        "total_discipline_count": 0,
+        "total_praise_count": 0,
+        "total_minigame_count": 0,
+        "total_minigame_win_count": 0,
+        "care_miss_count": 0,
+        "sickness_count": 0,
+        "night_visit_count": 0,
+        "odekake_active": 0,
+        "journeyed": 0,
+        "last_minigame_at": 0,
+    }
+    for key, default in int_defaults.items():
+        value = row.get(key)
+        if value is None:
+            updates[key] = default
+
+    for key in ("thread_id", "panel_message_id", "system_message_id", "alert_message_id"):
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        value_str = str(value).strip()
+        if not value_str.isdigit():
+            updates[key] = None
+
+    if stage in ("egg", "adult") and _coerce_int(row.get("poop"), 0) != 0:
+        updates["poop"] = 0
+    if row.get("call_reason") == "poop" and stage in ("egg", "adult"):
+        updates["call_reason"] = None
+        updates["call_flag"] = 0
+    if _coerce_int(row.get("odekake_active"), 0) and not row.get("odekake_started_at"):
+        updates["odekake_active"] = 0
+        updates["odekake_started_at"] = None
+
+    if updates:
+        update_pet(user_id, **updates)
+        row = fetch_pet(user_id)
+    return row
+
 
 def is_pet_row_valid(row) -> bool:
     if not row:
@@ -119,6 +241,8 @@ def is_pet_row_valid(row) -> bool:
             return True
         if row.get("stage") not in VALID_STAGES:
             return False
+        if row.get("character_id") not in CHARACTERS:
+            return False
         for key in REQUIRED_PET_FIELDS:
             value = row.get(key)
             if value is None or value == "":
@@ -127,8 +251,10 @@ def is_pet_row_valid(row) -> bool:
     except Exception:
         return False
 
+
 def fetch_pet_clean(user_id: int):
     row = fetch_pet(user_id)
+    row = repair_pet_row(user_id, row)
     if row and not is_pet_row_valid(row):
         delete_pet(user_id)
         return None
