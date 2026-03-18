@@ -7,8 +7,11 @@ FIXED_CHARACTER_CHANNEL_ID = 1481886210199781498
 IMAGE_CACHE: dict[str, str] = {}
 CACHE_READY = False
 
+def normalize_key(key: str | None) -> str:
+    return (key or "").strip().replace("　", " ")
+
 def _add_key(key: str | None, url: str):
-    key = (key or "").strip()
+    key = normalize_key(key)
     if key:
         IMAGE_CACHE.setdefault(key, url)
 
@@ -48,4 +51,4 @@ async def get_image_url(bot: discord.Client, key: str) -> Optional[str]:
         return None
     if not CACHE_READY:
         await warm_image_cache(bot)
-    return IMAGE_CACHE.get((key or "").strip())
+    return IMAGE_CACHE.get(normalize_key(key))

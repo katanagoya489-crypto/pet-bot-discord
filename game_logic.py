@@ -122,39 +122,62 @@ def status_lines(row):
     whim = "（わがままサイン）" if row["is_whim_call"] else ""
     praise = "✨ ほめてサイン" if row["praise_pending"] else ""
     good = "🙏 いいことサイン" if row.get("good_behavior_pending", 0) else ""
-    egg_note = "\n\n🥚 まだ卵の状態。孵化するまでは見守ってね。" if is_egg(row) else ""
-    return f"""**{pet_name(row)}**
-
-おなか　 {bar(row['hunger'])}
-ごきげん {bar(row['mood'])}
-ねむけ　 {clamp(row['sleepiness'])}%
-たいじゅう {row['weight']}g
-しつけ　 {row['discipline']}
-おせわミス {row['care_miss_count']}
-{"うんち　 " + str(row['poop']) if poop_enabled(row) else ""}
-たいちょう {health}
-いま　 {sleeping}
-状態 {call}{whim}\n{praise}\n{good}{egg_note}"""
+    lines = [
+        f"**{pet_name(row)}**",
+        "",
+        f"おなか　 {bar(row['hunger'])}",
+        f"ごきげん {bar(row['mood'])}",
+        f"ねむけ　 {clamp(row['sleepiness'])}%",
+        f"たいじゅう {row['weight']}g",
+        f"しつけ　 {row['discipline']}",
+        f"おせわミス {row['care_miss_count']}",
+    ]
+    if poop_enabled(row):
+        lines.append(f"うんち　 {row['poop']}")
+    lines += [
+        f"たいちょう {health}",
+        f"いま　 {sleeping}",
+        f"おるすばん {'中' if row.get('odekake_active') else 'なし'}",
+        f"状態 {call}{whim}",
+    ]
+    if praise:
+        lines.append(praise)
+    if good:
+        lines.append(good)
+    if is_egg(row):
+        lines += ["", "🥚 まだ卵の状態。孵化するまでは見守ってね。"]
+    return "\n".join(lines)
 
 def build_check_text(row):
     health = "びょうき" if row["is_sick"] else "げんき"
     sleeping = "ねている" if row["is_sleeping"] else "おきている"
-    return f"""【チェック】
-
-名前：{pet_name(row)}
-年齢：{age_days(row)}さい
-体重：{row['weight']}g
-いまのじかん：{current_time_label(row=row)}
-
-おなか　 {bar(row['hunger'])}
-ごきげん {bar(row['mood'])}
-しつけ　 {row['discipline']}
-おせわミス {row['care_miss_count']}
-
-たいちょう：{health}
-{("うんち：" + str(row['poop']) + "\n") if poop_enabled(row) else ""}ねむけ：{clamp(row['sleepiness'])}%
-でんき：{'OFF' if row['lights_off'] else 'ON'}
-状態：{sleeping}\n音：{sound_label(row)}\n注意：{'点灯中' if row['call_flag'] else '消灯'}\n呼出し段階：{call_stage_label(row)}"""
+    lines = [
+        "【チェック】",
+        "",
+        f"名前：{pet_name(row)}",
+        f"年齢：{age_days(row)}さい",
+        f"体重：{row['weight']}g",
+        f"いまのじかん：{current_time_label(row=row)}",
+        "",
+        f"おなか　 {bar(row['hunger'])}",
+        f"ごきげん {bar(row['mood'])}",
+        f"しつけ　 {row['discipline']}",
+        f"おせわミス {row['care_miss_count']}",
+        "",
+        f"たいちょう：{health}",
+    ]
+    if poop_enabled(row):
+        lines.append(f"うんち：{row['poop']}")
+    lines += [
+        f"ねむけ：{clamp(row['sleepiness'])}%",
+        f"でんき：{'OFF' if row['lights_off'] else 'ON'}",
+        f"状態：{sleeping}",
+        f"音：{sound_label(row)}",
+        f"おるすばん：{'中' if row.get('odekake_active') else 'なし'}",
+        f"注意：{'点灯中' if row['call_flag'] else '消灯'}",
+        f"呼出し段階：{call_stage_label(row)}",
+    ]
+    return "\n".join(lines)
 
 def get_decay_profile(row):
     stage = row["stage"]
@@ -266,7 +289,11 @@ def update_sleep_state(user_id, row, now):
 
 def update_over_time(user_id, row):
     now=int(time.time())
+    row = database.fetch_pet_clean(user_id) or row
     if row["journeyed"] or row["odekake_active"]: return row, [], None, None
+    if (not poop_enabled(row)) and (row.get("poop", 0) or row.get("call_reason") == "poop"):
+        database.update_pet(user_id, poop=0, call_flag=0 if row.get("call_reason") == "poop" else row.get("call_flag", 0), call_reason=None if row.get("call_reason") == "poop" else row.get("call_reason"))
+        row = database.fetch_pet_clean(user_id) or row
     is_sleeping, lights_off, wake_message = update_sleep_state(user_id, row, now)
     diff=max(0, now-row["last_access_at"])
     if diff < 30:
@@ -279,14 +306,17 @@ def update_over_time(user_id, row):
     hunger_loss = int(minutes/profile["hunger_minutes"]) if not is_sleeping else max(0, int(minutes/(profile["hunger_minutes"]*3.0)))
     mood_loss = int(minutes/profile["mood_minutes"]) if not is_sleeping else 0
     sleep_gain = 0 if is_sleeping else int(minutes/profile["sleep_gain_minutes"])
-    poop_gain = int(minutes/profile["poop_minutes"]) if not is_sleeping else max(0,int(minutes/(profile["poop_minutes"]*2.5)))
+    poop_active = poop_enabled(row)
+    poop_gain = 0
+    if poop_active:
+        poop_gain = int(minutes/profile["poop_minutes"]) if not is_sleeping else max(0, int(minutes / (profile["poop_minutes"] * 2.5)))
     hunger=clamp_meter(row["hunger"]-hunger_loss); mood=clamp_meter(row["mood"]-mood_loss)
     sleepiness = clamp(row["sleepiness"] + sleep_gain if not is_sleeping else max(0, row["sleepiness"] - int(minutes*1.5)))
-    poop=min(3, row["poop"]+poop_gain)
+    poop=min(3, row["poop"]+poop_gain) if poop_active else 0
     stress=row["stress"]
     if hunger <= 1: stress += 8
     if mood <= 1: stress += 8
-    if poop >= 1: stress += 10
+    if poop_active and poop >= 1: stress += 10
     if sleepiness >= 80 and not is_sleeping: stress += 6
     if is_sleeping and not lights_off: stress += 10
     stress=clamp(stress)
@@ -295,7 +325,7 @@ def update_over_time(user_id, row):
     is_sick=row["is_sick"]; sickness_count=row["sickness_count"]
     if not is_sick:
         sick_risk = 0
-        if poop >= 2: sick_risk += 20
+        if poop_active and poop >= 2: sick_risk += 20
         if stress >= 70: sick_risk += 20
         if hunger == 0: sick_risk += 20
         if row["care_miss_count"] >= 3: sick_risk += 10
@@ -360,6 +390,7 @@ def update_over_time(user_id, row):
     return database.fetch_pet(user_id), msgs, wake_message or warning, event
 
 def perform_action(user_id, row, action):
+    row = database.fetch_pet_clean(user_id) or row
     now=int(time.time()); transient=None
     if is_egg(row) and action != "status":
         row, msgs, warning, event = update_over_time(user_id,row); extra=[]; 
@@ -433,10 +464,13 @@ def perform_action(user_id, row, action):
             )
             result="✨ いまは ほめるタイミングじゃないみたい。"
     elif action=="clean":
-        bonus=personality_bonus(row["character_id"],"clean")
-        database.update_pet(user_id, poop=0, stress=clamp(row["stress"]-12+bonus.get("stress",0)), total_clean_count=row["total_clean_count"]+1,
-            call_flag=0 if row["call_reason"]=="poop" else row["call_flag"], call_reason=None if row["call_reason"]=="poop" else row["call_reason"], last_access_at=now)
-        result="🧹 うんちをきれいにした！"
+        if not poop_enabled(row):
+            result="🧹 いまはおそうじしなくてだいじょうぶ。"
+        else:
+            bonus=personality_bonus(row["character_id"],"clean")
+            database.update_pet(user_id, poop=0, stress=clamp(row["stress"]-12+bonus.get("stress",0)), total_clean_count=row["total_clean_count"]+1,
+                call_flag=0 if row["call_reason"]=="poop" else row["call_flag"], call_reason=None if row["call_reason"]=="poop" else row["call_reason"], last_access_at=now)
+            result="🧹 うんちをきれいにした！"
     elif action=="medicine":
         if row["is_sick"]:
             cured=1 if random.randint(1,100)<=85 else 0
@@ -477,7 +511,7 @@ def stop_odekake(user_id, row):
     return row, "🏠 おるすばんしゅうりょう！\n" + "\n".join(lines), extra
 
 def start_pet_if_needed(user_id, guild_id, thread_id):
-    row=database.fetch_pet(user_id)
+    row=database.fetch_pet_clean(user_id)
     if row and not row["journeyed"]: return row, False
     database.create_pet(user_id, guild_id, thread_id)
     return database.fetch_pet(user_id), True

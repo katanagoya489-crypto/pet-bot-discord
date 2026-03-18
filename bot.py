@@ -11,6 +11,7 @@ intents.guilds = True
 intents.members = True
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+BOT_VERSION = "yuitchi-minfix-2026-03-19a"
 WELCOME_MARKER = "○○っちへようこそ！"
 TEMP_MESSAGE_SECONDS = 8
 
@@ -116,7 +117,7 @@ def remind_due(row, now:int):
     return now - last >= interval
 
 async def refresh_panel_for_user(user_id:int, prefix:str="", transient=None):
-    row = database.fetch_pet(user_id)
+    row = database.fetch_pet_clean(user_id)
     if not row or not row["panel_message_id"]: return
     thread = None
     if row["thread_id"]:
@@ -182,7 +183,7 @@ class MainPanelView(discord.ui.View):
     async def start(self, interaction, button):
         user=interaction.user; guild=interaction.guild
         if guild is None: return await send_temp_interaction_message(interaction, "サーバー内で使ってね。")
-        row=database.fetch_pet(user.id)
+        row=database.fetch_pet_clean(user.id)
         if row and not row["journeyed"]: return await send_temp_interaction_message(interaction, "すでに育成中のデータがあるよ。『育成の続きから』を押して再開してね。")
         channel=interaction.channel
         if not isinstance(channel, discord.TextChannel): return await send_temp_interaction_message(interaction, "テキストチャンネルで使ってね。")
@@ -202,7 +203,7 @@ class MainPanelView(discord.ui.View):
     async def continue_btn(self, interaction, button):
         user=interaction.user; guild=interaction.guild
         if guild is None: return await send_temp_interaction_message(interaction, "サーバー内で使ってね。")
-        try: database.init_db(); row=database.fetch_pet(user.id)
+        try: database.init_db(); row=database.fetch_pet_clean(user.id)
         except sqlite3.OperationalError as e: return await send_temp_interaction_message(interaction, f"続きからの復帰に失敗したよ。\n`{type(e).__name__}`")
         if not row or row["journeyed"]: return await send_temp_interaction_message(interaction, "続きの育成データが見つからないよ。『育成開始』から始めてね。")
         thread=None
@@ -245,7 +246,7 @@ class PetView(discord.ui.View):
         super().__init__(timeout=None)
         self.owner_id=owner_id
         try:
-            row = database.fetch_pet(owner_id)
+            row = database.fetch_pet_clean(owner_id)
             if row and hasattr(game_logic, "poop_enabled") and (not game_logic.poop_enabled(row)):
                 for item in list(self.children):
                     if getattr(item, "custom_id", "") == "pet:clean":
@@ -257,8 +258,12 @@ class PetView(discord.ui.View):
             await send_temp_interaction_message(interaction, "この子のお世話は本人だけができるよ。"); return False
         return True
     async def _do_action(self, interaction, action):
-        row=database.fetch_pet(self.owner_id); row, result, msgs, transient = game_logic.perform_action(self.owner_id, row, action)
-        await interaction.response.defer(); await refresh_panel_for_user(self.owner_id, prefix="" if action=="status" else result, transient=transient)
+        await interaction.response.defer()
+        row=database.fetch_pet_clean(self.owner_id)
+        if not row:
+            return await send_temp_interaction_message(interaction, "育成データが見つからないよ。")
+        row, result, msgs, transient = game_logic.perform_action(self.owner_id, row, action)
+        await refresh_panel_for_user(self.owner_id, prefix="" if action=="status" else result, transient=transient)
         thread=interaction.channel
         if isinstance(thread, discord.Thread):
             latest_row=database.fetch_pet(self.owner_id)
@@ -297,13 +302,15 @@ class PetView(discord.ui.View):
     @discord.ui.button(label="ミニゲーム", style=discord.ButtonStyle.green, row=3, custom_id="pet:minigame")
     async def minigame(self, interaction, button):
         if not await self._owner_check(interaction): return
-        row=database.fetch_pet(self.owner_id); _, err = game_logic.start_minigame(self.owner_id, row, "rhythm")
+        row=database.fetch_pet_clean(self.owner_id)
+        if not row: return await send_temp_interaction_message(interaction, "育成データが見つからないよ。")
+        _, err = game_logic.start_minigame(self.owner_id, row, "rhythm")
         if err: return await send_temp_interaction_message(interaction, err)
         await send_temp_interaction_message(interaction, "あそぶ音楽ゲームを選んでね。", view=MiniGameMenuView(self.owner_id), seconds=15)
     @discord.ui.button(label="設定", style=discord.ButtonStyle.gray, row=3, custom_id="pet:settings")
     async def settings(self, interaction, button):
         if not await self._owner_check(interaction): return
-        row=database.fetch_pet(self.owner_id)
+        row=database.fetch_pet_clean(self.owner_id)
         sound = "ON" if row["sound_enabled"] else "OFF"
         await send_temp_interaction_message(interaction, f"通知モード: {game_logic.notification_mode_label(row['notification_mode'])}\n音: {sound}", view=SettingsView(self.owner_id), seconds=20)
 
@@ -393,7 +400,7 @@ class DexNavButton(discord.ui.Button):
 
 @bot.command(name="image_keys")
 async def image_keys_cmd(ctx):
-    row = database.fetch_pet(ctx.author.id)
+    row = database.fetch_pet_clean(ctx.author.id)
     if not row:
         return await ctx.send("育成データがないよ。")
     keys = game_logic.image_keys_for_debug(row) if hasattr(game_logic, "image_keys_for_debug") else [game_logic.image_key_for_pet(row)]
@@ -401,8 +408,16 @@ async def image_keys_cmd(ctx):
 
 @bot.event
 async def on_ready():
-    database.init_db(); bot.add_view(MainPanelView()); print(f"Logged in as {bot.user}")
-    bot.loop.create_task(ensure_main_panel()); bot.loop.create_task(auto_tick_loop())
+    database.init_db()
+    bot.add_view(MainPanelView())
+    print(f"結っちBOT 起動: version={BOT_VERSION}")
+    print(f"Logged in as {bot.user}")
+    try:
+        await image_service.warm_image_cache(bot)
+    except Exception as e:
+        print(f"画像読み込み失敗: {type(e).__name__}")
+    bot.loop.create_task(ensure_main_panel())
+    bot.loop.create_task(auto_tick_loop())
 
 @bot.command()
 async def setup_panel(ctx):

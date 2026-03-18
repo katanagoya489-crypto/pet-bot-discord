@@ -107,6 +107,32 @@ def init_db():
             conn.commit()
     conn.close()
 
+
+VALID_STAGES = {"egg", "baby1", "baby2", "child", "adult"}
+REQUIRED_PET_FIELDS = ("guild_id", "character_id", "stage", "birth_at", "stage_entered_at", "last_access_at")
+
+def is_pet_row_valid(row) -> bool:
+    if not row:
+        return False
+    try:
+        if row.get("journeyed"):
+            return True
+        if row.get("stage") not in VALID_STAGES:
+            return False
+        for key in REQUIRED_PET_FIELDS:
+            value = row.get(key)
+            if value is None or value == "":
+                return False
+        return True
+    except Exception:
+        return False
+
+def fetch_pet_clean(user_id: int):
+    row = fetch_pet(user_id)
+    if row and not is_pet_row_valid(row):
+        delete_pet(user_id)
+        return None
+    return row
 def fetch_pet(user_id: int):
     conn = get_conn()
     row = conn.execute("SELECT * FROM pets WHERE user_id = ?", (str(user_id),)).fetchone()
