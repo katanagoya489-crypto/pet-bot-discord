@@ -3,53 +3,66 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 import discord
 
 try:
-    from config import CHARACTER_CHANNEL_ID as CONFIG_CHARACTER_CHANNEL_ID
+    from config import CHARACTER_CHANNEL_ID  # type: ignore
 except Exception:
-    CONFIG_CHARACTER_CHANNEL_ID = 0
+    CHARACTER_CHANNEL_ID = int(os.getenv("CHARACTER_CHANNEL_ID", "0") or 0)
 
-CHARACTER_CHANNEL_ID = int(os.getenv('CHARACTER_CHANNEL_ID', str(CONFIG_CHARACTER_CHANNEL_ID or 0)) or 0)
 _CACHE: dict[str, tuple[float, Optional[str]]] = {}
-_CACHE_TTL = 300.0
+_CACHE_SECONDS = 120.0
 
 
-def _norm(text: str) -> str:
-    return (text or '').strip()
+def _normalize(s: str) -> str:
+    return (s or "").strip().replace("\u3000", " ")
 
 
-async def get_image_url(bot: discord.Client, key: str) -> Optional[str]:
-    if not CHARACTER_CHANNEL_ID or not key:
-        return None
-    now = time.time()
-    cached = _CACHE.get(key)
-    if cached and now - cached[0] < _CACHE_TTL:
-        return cached[1]
+def _filename_stem(name: str) -> str:
+    return Path(name).stem.strip()
 
+
+async def _iter_channel_messages(bot: discord.Client):
+    if not CHARACTER_CHANNEL_ID:
+        return
     channel = bot.get_channel(CHARACTER_CHANNEL_ID)
     if channel is None:
         try:
             channel = await bot.fetch_channel(CHARACTER_CHANNEL_ID)
         except Exception:
-            _CACHE[key] = (now, None)
-            return None
+            return
     if not isinstance(channel, discord.TextChannel):
-        _CACHE[key] = (now, None)
-        return None
+        return
+    async for msg in channel.history(limit=3000):
+        yield msg
 
-    exact = _norm(key)
-    lower = exact.lower()
-    async for msg in channel.history(limit=4000):
-        text = _norm(msg.content)
-        first_line = _norm(text.splitlines()[0]) if text else ''
-        attach_name = Path(msg.attachments[0].filename).stem if msg.attachments else ''
-        candidates = {text, first_line, attach_name, text.lower(), first_line.lower(), attach_name.lower()}
-        if msg.attachments and (exact in candidates or lower in candidates):
-            url = msg.attachments[0].url
-            _CACHE[key] = (now, url)
+
+async def get_image_url(bot: discord.Client, key: str) -> Optional[str]:
+    key = _normalize(key)
+    if not key:
+        return None
+    now = time.time()
+    cached = _CACHE.get(key)
+    if cached and now - cached[0] < _CACHE_SECONDS:
+        return cached[1]
+
+    result: Optional[str] = None
+    async for msg in _iter_channel_messages(bot):
+        content = _normalize(msg.content)
+        first_line = _normalize(content.splitlines()[0]) if content else ""
+        attachment_stem = _filename_stem(msg.attachments[0].filename) if msg.attachments else ""
+        if msg.attachments and (content == key or first_line == key or attachment_stem == key):
+            result = msg.attachments[0].url
+            break
+    _CACHE[key] = (now, result)
+    return result
+
+
+async def find_first_image_url(bot: discord.Client, keys: Iterable[str]) -> Optional[str]:
+    for key in keys:
+        url = await get_image_url(bot, key)
+        if url:
             return url
-    _CACHE[key] = (now, None)
     return None
