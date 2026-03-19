@@ -1,9 +1,9 @@
 from __future__ import annotations
-import asyncio, time, sqlite3, discord
+import asyncio, time, sqlite3, discord, os
 from discord.ext import commands
 import database, game_logic, image_service
 from game_data import CHARACTERS, DEX_TARGETS, MUSIC_GAMES
-from config import DISCORD_BOT_TOKEN, ADMIN_USER_IDS, ENTRY_CHANNEL_ID
+from config import DISCORD_BOT_TOKEN as CONFIG_DISCORD_BOT_TOKEN, ADMIN_USER_IDS, ENTRY_CHANNEL_ID
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
@@ -14,6 +14,13 @@ BOT_VERSION = "yuitchi-minfix-2026-03-19d"
 PET_SCHEMA_VERSION = database.PET_DATA_SCHEMA_VERSION
 WELCOME_MARKER = "○○っちへようこそ！"
 TEMP_MESSAGE_SECONDS = 8
+def normalize_bot_token(raw_token) -> str:
+    token = str(raw_token or os.getenv("DISCORD_BOT_TOKEN", "")).strip()
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}:
+        token = token[1:-1].strip()
+    return token
+
+DISCORD_BOT_TOKEN = normalize_bot_token(CONFIG_DISCORD_BOT_TOKEN)
 def is_owner(interaction: discord.Interaction, owner_id: int) -> bool:
     return interaction.user.id == owner_id
 async def send_temp_interaction_message(interaction, content=None, *, embed=None, view=None, ephemeral=True, seconds=TEMP_MESSAGE_SECONDS):
@@ -482,4 +489,11 @@ async def setup_panel(ctx):
         msg=await channel.send(f"**{WELCOME_MARKER}**\n育成開始を押して遊んでね。", view=MainPanelView())
         database.set_meta("main_panel_message_id", str(msg.id)); await cleanup_old_main_panels(channel, keep_message_id=msg.id)
 if __name__ == "__main__":
-    bot.run(DISCORD_BOT_TOKEN)
+    if not DISCORD_BOT_TOKEN:
+        print("起動失敗: DISCORD_BOT_TOKEN が空です。Railway の Variables を確認してね。")
+        raise SystemExit(1)
+    try:
+        bot.run(DISCORD_BOT_TOKEN)
+    except discord.errors.LoginFailure:
+        print("起動失敗: DISCORD_BOT_TOKEN が無効です。Railway の Variables に Bot Token をそのまま入れ直してね。")
+        raise
