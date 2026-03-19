@@ -10,7 +10,7 @@ intents.guilds = True
 intents.members = True
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
-BOT_VERSION = "yuitchi-minfix-2026-03-19c"
+BOT_VERSION = "yuitchi-minfix-2026-03-19d"
 PET_SCHEMA_VERSION = database.PET_DATA_SCHEMA_VERSION
 WELCOME_MARKER = "○○っちへようこそ！"
 TEMP_MESSAGE_SECONDS = 8
@@ -132,15 +132,18 @@ async def refresh_panel_for_user(user_id:int, prefix:str="", transient=None):
             character_name = CHARACTERS[owned[-1]["character_id"]]["name"] if owned else CHARACTERS[row["character_id"]]["name"]
             letter_embed = await build_letter_embed(character_name)
             if letter_embed: await thread.send(embed=letter_embed)
-    if row["call_flag"] and ((not prev_call) or (prev_reason != row["call_reason"]) or remind_due(row, now)):
+    if row.get("journeyed"):
+        await upsert_alert_log(thread, user_id, "○ 手紙を残して旅立ったよ。\n『卵に戻る』で次の育成を始められるよ。")
+    elif row["call_flag"] and ((not prev_call) or (prev_reason != row["call_reason"]) or remind_due(row, now)):
         call_text = game_logic.call_message_text(f"<@{user_id}>", row) or "● 注意アイコン点灯中\n🔔 おせわサイン"
         await upsert_alert_log(thread, user_id, call_text)
         database.update_pet(user_id, last_call_notified_at=now)
-    if row["praise_pending"] and not row["call_flag"]:
+    if (not row.get("journeyed")) and row["praise_pending"] and not row["call_flag"]:
         await upsert_alert_log(thread, user_id, "✨ ほめてサイン\n<@{}>\n👉 おすすめ：ほめる".format(user_id))
-    elif (not row["call_flag"]) and prev_call:
+    elif (not row.get("journeyed")) and (not row["call_flag"]) and prev_call:
         await upsert_alert_log(thread, user_id, "○ 注意アイコン消灯\nいまはだいじょうぶ。\nまたようすをみてね。")
-    await msg.edit(content=content, embed=embed, view=PetView(user_id))
+    current_view = JourneyView(user_id) if row.get("journeyed") else PetView(user_id)
+    await msg.edit(content=content, embed=embed, view=current_view)
 async def ensure_main_panel():
     if not ENTRY_CHANNEL_ID: return
     await bot.wait_until_ready()
@@ -164,7 +167,7 @@ async def auto_tick_loop():
         try:
             if int(time.time()) % (15 * 60) < 60:
                 stats = database.migrate_all_pets_to_latest(active_only=False)
-                print(f"全プレイヤーデータ更新: total={stats['total']} updated={stats['updated']} deleted={stats['deleted']} kept={stats['kept']}")
+                print(f"セーブデータチェッカー: total={stats['total']} updated={stats['updated']} kept={stats['kept']} collection_fixed={stats.get('collection_fixed',0)} reset_to_egg={stats.get('reset_to_egg',0)}")
         except Exception as e:
             print(f"全プレイヤーデータ更新失敗: {type(e).__name__}")
         for user_id in database.list_pet_user_ids(active_only=True):
@@ -313,6 +316,47 @@ class PetView(discord.ui.View):
         row=database.fetch_pet_clean(self.owner_id)
         sound = "ON" if row["sound_enabled"] else "OFF"
         await send_temp_interaction_message(interaction, f"通知モード: {game_logic.notification_mode_label(row['notification_mode'])}\n音: {sound}", view=SettingsView(self.owner_id), seconds=20)
+
+class JourneyView(discord.ui.View):
+    def __init__(self, owner_id:int):
+        super().__init__(timeout=None)
+        self.owner_id = owner_id
+
+    async def _owner_check(self, interaction):
+        if interaction.user.id != self.owner_id:
+            await send_temp_interaction_message(interaction, "この育成データの本人だけ使えるよ。")
+            return False
+        return True
+
+    @discord.ui.button(label="卵に戻る", style=discord.ButtonStyle.green, custom_id="journey:restart")
+    async def restart(self, interaction, button):
+        if not await self._owner_check(interaction):
+            return
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        row = database.fetch_pet_clean(self.owner_id)
+        if not row:
+            return await send_temp_interaction_message(interaction, "育成データが見つからないよ。")
+        thread_id = interaction.channel.id if isinstance(interaction.channel, discord.Thread) else row.get("thread_id")
+        new_row, message = game_logic.restart_pet_after_journey(self.owner_id, thread_id=thread_id)
+        if not new_row:
+            return await send_temp_interaction_message(interaction, message)
+        panel_message_id = row.get("panel_message_id")
+        if panel_message_id:
+            database.update_pet(self.owner_id, panel_message_id=panel_message_id, thread_id=str(thread_id) if thread_id else row.get("thread_id"))
+        await refresh_panel_for_user(self.owner_id, prefix=message)
+        thread = interaction.channel
+        if isinstance(thread, discord.Thread):
+            await upsert_system_log(thread, self.owner_id, "🥚 新しい育成を開始したよ。")
+            await upsert_alert_log(thread, self.owner_id, "○ 注意アイコン消灯\nいまはだいじょうぶ。\nまたようすをみてね。")
+        await send_temp_interaction_message(interaction, message)
+
+    @discord.ui.button(label="図鑑", style=discord.ButtonStyle.blurple, custom_id="journey:dex")
+    async def dex(self, interaction, button):
+        if not await self._owner_check(interaction):
+            return
+        await send_temp_interaction_message(interaction, game_logic.build_dex_text(self.owner_id), view=DexView(self.owner_id, 0), seconds=20)
+
 class SettingsView(discord.ui.View):
     def __init__(self, owner_id:int): super().__init__(timeout=180); self.owner_id=owner_id
     @discord.ui.button(label="通知:たまごっち", style=discord.ButtonStyle.green)
@@ -353,7 +397,7 @@ class MiniGameMenuView(discord.ui.View):
     async def melody(self, interaction, button): await self.send_game(interaction, "melody")
 class MiniGameAnswerView(discord.ui.View):
     def __init__(self, owner_id:int, game_key:str):
-        super().__init__(timeout=180); game=MUSIC_GAMES[game_key]
+        super().__init__(timeout=None); game=MUSIC_GAMES[game_key]
         for idx, choice in enumerate(game["choices"]): self.add_item(MiniGameChoiceButton(owner_id, game_key, idx, choice))
 class MiniGameChoiceButton(discord.ui.Button):
     def __init__(self, owner_id:int, game_key:str, idx:int, label:str):
@@ -373,7 +417,7 @@ class MiniGameChoiceButton(discord.ui.Button):
             await upsert_alert_log(thread, self.owner_id, body)
 class DexView(discord.ui.View):
     def __init__(self, owner_id:int, page:int):
-        super().__init__(timeout=180); self.owner_id=owner_id; self.page=page
+        super().__init__(timeout=None); self.owner_id=owner_id; self.page=page
         owned_rows=database.fetch_collection(owner_id); owned_ids=[r["character_id"] for r in owned_rows]
         owned_target_ids=[cid for cid in DEX_TARGETS if cid in owned_ids]; per=4; chunk=owned_target_ids[page*per:(page+1)*per]
         if chunk:
@@ -397,6 +441,16 @@ async def image_keys_cmd(ctx):
         return await ctx.send("育成データがないよ。")
     keys = game_logic.image_keys_for_debug(row) if hasattr(game_logic, "image_keys_for_debug") else [game_logic.image_key_for_pet(row)]
     await ctx.send("\n".join(keys[:25]))
+@bot.command(name="save_check")
+async def save_check_cmd(ctx):
+    row, stats = database.run_save_checker_for_user(ctx.author.id)
+    if not row:
+        return await ctx.send("育成データがないよ。")
+    await ctx.send(
+        f"save_check: checked={stats['checked']} repaired={stats['repaired']} "
+        f"collection_fixed={stats['collection_fixed']} reset_to_egg={stats['reset_to_egg']}"
+    )
+
 @bot.event
 async def on_ready():
     database.init_db()
@@ -409,7 +463,9 @@ async def on_ready():
         if stats.get("skipped"):
             print(f"全プレイヤーデータ更新: skipped version={stats['version']}")
         else:
-            print(f"全プレイヤーデータ更新: total={stats['total']} updated={stats['updated']} deleted={stats['deleted']} kept={stats['kept']} version={stats['version']}")
+            print(f"全プレイヤーデータ更新: total={stats['total']} updated={stats['updated']} deleted={stats['deleted']} kept={stats['kept']} collection_fixed={stats.get('collection_fixed',0)} reset_to_egg={stats.get('reset_to_egg',0)} version={stats['version']}")
+        checker = database.migrate_all_pets_to_latest(active_only=False)
+        print(f"セーブデータチェッカー: total={checker['total']} updated={checker['updated']} collection_fixed={checker.get('collection_fixed',0)} reset_to_egg={checker.get('reset_to_egg',0)}")
     except Exception as e:
         print(f"全プレイヤーデータ更新失敗: {type(e).__name__}")
     try:

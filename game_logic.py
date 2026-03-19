@@ -122,6 +122,16 @@ def status_lines(row):
     whim = "（わがままサイン）" if row["is_whim_call"] else ""
     praise = "✨ ほめてサイン" if row["praise_pending"] else ""
     good = "🙏 いいことサイン" if row.get("good_behavior_pending", 0) else ""
+    if row.get("journeyed"):
+        lines = [
+            f"**{pet_name(row)}**",
+            "",
+            "🌟 旅立ちずみ",
+            "📖 図鑑に登録ずみ",
+            "✉ 手紙を見たら『卵に戻る』で次の育成へ",
+            f"いま　 {current_time_label(row=row)}",
+        ]
+        return "\n".join(lines)
     lines = [
         f"**{pet_name(row)}**",
         "",
@@ -151,6 +161,16 @@ def status_lines(row):
 def build_check_text(row):
     health = "びょうき" if row["is_sick"] else "げんき"
     sleeping = "ねている" if row["is_sleeping"] else "おきている"
+    if row.get("journeyed"):
+        return "\n".join([
+            "【チェック】",
+            "",
+            f"名前：{pet_name(row)}",
+            "状態：旅立ちずみ",
+            "図鑑：登録ずみ",
+            "次：『卵に戻る』で新しい育成を始められるよ",
+            f"いまのじかん：{current_time_label(row=row)}",
+        ])
     lines = [
         "【チェック】",
         "",
@@ -245,7 +265,8 @@ def evolve_if_needed(user_id, row):
         if elapsed >= JOURNEY_MIN_SECONDS:
             chance = min(1.0, (elapsed - JOURNEY_MIN_SECONDS) / max(1, JOURNEY_MAX_SECONDS - JOURNEY_MIN_SECONDS))
             if random.random() < chance:
-                database.save_collection(user_id, row["character_id"]); database.update_pet(user_id, journeyed=1)
+                database.save_collection(user_id, row["character_id"])
+                database.update_pet(user_id, journeyed=1, call_flag=0, call_reason=None, call_started_at=0, call_stage=0, is_whim_call=0, odekake_active=0, odekake_started_at=None)
                 messages.append(f"📖 図鑑登録！ **{CHARACTERS[row['character_id']]['name']}** を登録したよ！")
                 messages.append(f"🌟 **{CHARACTERS[row['character_id']]['name']}** は旅に出ました。")
     return messages
@@ -523,6 +544,16 @@ def start_pet_if_needed(user_id, guild_id, thread_id):
     if row and not row["journeyed"]: return row, False
     database.create_pet(user_id, guild_id, thread_id)
     return database.fetch_pet(user_id), True
+
+def restart_pet_after_journey(user_id, *, thread_id=None):
+    row = database.fetch_pet_clean(user_id)
+    if not row:
+        return None, "育成データが見つからないよ。"
+    if not row.get("journeyed"):
+        return row, "まだ旅立っていないよ。"
+    database.save_collection(user_id, row["character_id"])
+    new_row = database.restart_pet_cycle(user_id, thread_id=thread_id)
+    return new_row, "🥚 新しい卵に戻ったよ！"
 
 def build_dex_text(user_id):
     owned={row["character_id"] for row in database.fetch_collection(user_id)}

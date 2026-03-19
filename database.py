@@ -4,7 +4,7 @@ from typing import Any
 from config import DATABASE_PATH
 from game_data import CHARACTERS
 
-PET_DATA_SCHEMA_VERSION = "2026-03-19c"
+PET_DATA_SCHEMA_VERSION = "2026-03-19d"
 ALLOWED_NOTIFICATION_MODES = {"tamagotchi", "normal", "quiet", "mute"}
 
 BASE_CREATE_SQL = """
@@ -142,18 +142,16 @@ def repair_pet_row(user_id: int, row):
     character_id = row.get("character_id")
     stage = row.get("stage")
 
+    if stage not in VALID_STAGES:
+        stage = "egg"
+        updates["stage"] = stage
+
     if character_id not in CHARACTERS:
-        if stage in STAGE_DEFAULT_CHARACTER:
-            character_id = STAGE_DEFAULT_CHARACTER[stage]
-            updates["character_id"] = character_id
-        else:
-            return None
+        character_id = STAGE_DEFAULT_CHARACTER.get(stage, "egg_yuiran")
+        updates["character_id"] = character_id
 
     expected_stage = CHARACTERS[character_id]["stage"]
-    if stage not in VALID_STAGES:
-        stage = expected_stage
-        updates["stage"] = stage
-    elif stage != expected_stage:
+    if stage != expected_stage:
         stage = expected_stage
         updates["stage"] = stage
 
@@ -258,12 +256,68 @@ def is_pet_row_valid(row) -> bool:
 
 
 def fetch_pet_clean(user_id: int):
-    row = fetch_pet(user_id)
-    row = repair_pet_row(user_id, row)
-    if row and not is_pet_row_valid(row):
-        delete_pet(user_id)
-        return None
+    row, _ = run_save_checker_for_user(user_id)
     return row
+
+def run_save_checker_for_user(user_id: int):
+    stats = {"checked": 0, "repaired": 0, "collection_fixed": 0, "reset_to_egg": 0}
+    row = fetch_pet(user_id)
+    if not row:
+        return None, stats
+    stats["checked"] = 1
+    before = dict(row)
+    row = repair_pet_row(user_id, row)
+    if not row:
+        fallback = {
+            "guild_id": str(before.get("guild_id") or "0"),
+            "thread_id": before.get("thread_id"),
+            "panel_message_id": before.get("panel_message_id"),
+            "system_message_id": before.get("system_message_id"),
+            "alert_message_id": before.get("alert_message_id"),
+            "character_id": "egg_yuiran",
+            "stage": "egg",
+            "birth_at": int(time.time()),
+            "stage_entered_at": int(time.time()),
+            "last_access_at": int(time.time()),
+        }
+        update_pet(user_id, **fallback)
+        row = fetch_pet(user_id)
+        stats["reset_to_egg"] += 1
+    elif row != before:
+        stats["repaired"] += 1
+
+    if row and not is_pet_row_valid(row):
+        now = int(time.time())
+        update_pet(
+            user_id,
+            character_id="egg_yuiran",
+            stage="egg",
+            birth_at=_coerce_int(row.get("birth_at"), now) or now,
+            stage_entered_at=now,
+            last_access_at=now,
+            journeyed=0,
+            poop=0,
+            call_flag=0,
+            call_reason=None,
+            call_started_at=0,
+            call_stage=0,
+            is_whim_call=0,
+            is_sick=0,
+            odekake_active=0,
+            odekake_started_at=None,
+        )
+        row = fetch_pet(user_id)
+        stats["reset_to_egg"] += 1
+
+    if row and row.get("journeyed") and str(row.get("character_id", "")).startswith(("adult_", "secret_")):
+        before_count = len(fetch_collection(user_id))
+        save_collection(user_id, row["character_id"])
+        after_count = len(fetch_collection(user_id))
+        if after_count > before_count:
+            stats["collection_fixed"] += 1
+            row = fetch_pet(user_id) or row
+    return row, stats
+
 def fetch_pet(user_id: int):
     conn = get_conn()
     row = conn.execute("SELECT * FROM pets WHERE user_id = ?", (str(user_id),)).fetchone()
@@ -294,6 +348,16 @@ def create_pet(user_id: int, guild_id: int, thread_id: int):
     """, (str(user_id), str(guild_id), str(thread_id), now, now, now))
     conn.commit()
     conn.close()
+
+
+def restart_pet_cycle(user_id: int, *, thread_id: int | None = None):
+    row = fetch_pet(user_id)
+    if not row:
+        return None
+    guild_id = row.get("guild_id") or "0"
+    target_thread_id = thread_id if thread_id is not None else row.get("thread_id") or 0
+    create_pet(int(user_id), int(guild_id), int(target_thread_id))
+    return fetch_pet(user_id)
 
 def update_pet(user_id: int, **fields: Any):
     if not fields:
@@ -383,28 +447,27 @@ def list_pet_user_ids(*, active_only: bool = False):
 
 
 def migrate_all_pets_to_latest(*, active_only: bool = False):
-    stats = {"total": 0, "updated": 0, "deleted": 0, "kept": 0}
+    stats = {"total": 0, "updated": 0, "deleted": 0, "kept": 0, "collection_fixed": 0, "reset_to_egg": 0}
     for user_id in list_pet_user_ids(active_only=active_only):
-        before = fetch_pet(user_id)
-        if not before:
+        row, row_stats = run_save_checker_for_user(user_id)
+        if row_stats["checked"] == 0:
             continue
         stats["total"] += 1
-        after = repair_pet_row(user_id, before)
-        if after and is_pet_row_valid(after):
-            if after != before:
-                stats["updated"] += 1
-            else:
-                stats["kept"] += 1
-            continue
-        delete_pet(user_id)
-        stats["deleted"] += 1
+        if row_stats["repaired"]:
+            stats["updated"] += 1
+        elif row_stats["reset_to_egg"]:
+            stats["updated"] += 1
+        else:
+            stats["kept"] += 1
+        stats["collection_fixed"] += row_stats["collection_fixed"]
+        stats["reset_to_egg"] += row_stats["reset_to_egg"]
     return stats
 
 
 def ensure_pet_schema_latest(*, force: bool = False):
     current = get_meta("pet_schema_version")
     if (not force) and current == PET_DATA_SCHEMA_VERSION:
-        return {"skipped": 1, "version": PET_DATA_SCHEMA_VERSION, "total": 0, "updated": 0, "deleted": 0, "kept": 0}
+        return {"skipped": 1, "version": PET_DATA_SCHEMA_VERSION, "total": 0, "updated": 0, "deleted": 0, "kept": 0, "collection_fixed": 0, "reset_to_egg": 0}
     stats = migrate_all_pets_to_latest(active_only=False)
     set_meta("pet_schema_version", PET_DATA_SCHEMA_VERSION)
     stats["version"] = PET_DATA_SCHEMA_VERSION
